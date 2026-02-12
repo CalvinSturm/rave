@@ -1,0 +1,35 @@
+[package]
+name = "videoforge-engine"
+version = "2.0.0"
+edition = "2024"
+description = "GPU-native video super-resolution engine. Zero-copy NVDEC→TensorRT→NVENC pipeline."
+
+[dependencies]
+# CUDA Driver API — safe wrappers, stream management, kernel launch
+cudarc = { version = "0.12", features = ["driver", "nvrtc"] }
+
+# ONNX Runtime — TensorRT execution provider, IO binding
+ort = { version = "2.0", features = ["cuda", "tensorrt"] }
+
+# Async runtime — multi-threaded, bounded channels, cancellation
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "signal", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async trait support (dyn dispatch for UpscaleBackend)
+async-trait = "0.1"
+
+# Structured logging
+tracing = "0.1"
+
+# f16 tensor support
+half = { version = "2", features = ["num-traits"] }
+
+[features]
+default = []
+# Debug-only host allocation tracking. Wraps global allocator.
+# Do NOT enable in release builds.
+debug-alloc = []
