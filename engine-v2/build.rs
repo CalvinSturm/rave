@@ -1,68 +1,91 @@
-//! Build script — locate CUDA toolkit and link nvcuvid + nvEncodeAPI.
+//! Build script — locate CUDA toolkit, Video Codec SDK, and FFmpeg.
 //!
-//! Requires `CUDA_PATH` env var pointing to the CUDA toolkit root.
+//! Required environment variables:
+//!   CUDA_PATH  — CUDA toolkit root (set by NVIDIA installer)
+//!   FFMPEG_DIR — FFmpeg root with lib/, include/, bin/ (set in .cargo/config.toml)
+//!
+//! Video Codec SDK libs (nvcuvid.lib, nvencodeapi.lib) are resolved from:
+//!   1. ../third_party/nvcodec (bundled in repo)
+//!   2. CUDA_PATH/lib/x64 (fallback)
 
 use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    // Only re-run if these change.
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     println!("cargo:rerun-if-changed=build.rs");
+
+    // ── CUDA Toolkit ────────────────────────────────────────────────────────
 
     let cuda_path = env::var("CUDA_PATH")
         .expect("CUDA_PATH env var must be set (e.g., C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.x)");
 
-    let root = PathBuf::from(cuda_path);
+    let cuda_root = PathBuf::from(cuda_path);
 
-    // 1. Library Search Paths
-    let lib_dir = if cfg!(target_os = "windows") {
-        root.join("lib").join("x64")
+    let cuda_lib_dir = if cfg!(target_os = "windows") {
+        cuda_root.join("lib").join("x64")
     } else {
-        root.join("lib64")
+        cuda_root.join("lib64")
     };
 
-    if !lib_dir.exists() {
+    if !cuda_lib_dir.exists() {
         panic!(
             "CRITICAL: CUDA library directory not found at {}",
-            lib_dir.display()
+            cuda_lib_dir.display()
         );
     }
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    println!("cargo:rustc-link-search=native={}", cuda_lib_dir.display());
 
-    // 2. Header Search Paths (Propagate to dependencies/bindgen)
-    let include_dir = root.join("include");
-    if !include_dir.exists() {
+    let cuda_include_dir = cuda_root.join("include");
+    if !cuda_include_dir.exists() {
         panic!(
             "CRITICAL: CUDA include directory not found at {}",
-            include_dir.display()
+            cuda_include_dir.display()
         );
     }
-    // This allows other crates or bindgen to find nvcuvid.h / nvEncodeAPI.h
-    println!("cargo:include={}", include_dir.display());
+    println!("cargo:include={}", cuda_include_dir.display());
 
-    // 3. Link nvcuvid (NVDEC)
-    // Verify .lib existence on Windows to provide better error messages
-    if cfg!(target_os = "windows") {
-        let nvcuvid_lib = lib_dir.join("nvcuvid.lib");
-        if !nvcuvid_lib.exists() {
-            panic!("MISSING SDK: nvcuvid.lib not found in {}. Did you copy it from the Video Codec SDK?", lib_dir.display());
-        }
+    // Link CUDA Driver API
+    println!("cargo:rustc-link-lib=dylib=cuda");
+
+    // ── Video Codec SDK (nvcuvid + nvEncodeAPI) ─────────────────────────────
+
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let nvcodec_dir = manifest_dir
+        .parent()
+        .unwrap()
+        .join("third_party")
+        .join("nvcodec");
+
+    if nvcodec_dir.exists()
+        && nvcodec_dir.join("nvcuvid.lib").exists()
+        && nvcodec_dir.join("nvencodeapi.lib").exists()
+    {
+        println!("cargo:rustc-link-search=native={}", nvcodec_dir.display());
+    } else {
+        // Fallback: expect libs in CUDA toolkit directory
+        println!(
+            "cargo:warning=Video Codec SDK libs not found in {}. Falling back to CUDA lib dir.",
+            nvcodec_dir.display()
+        );
     }
-    println!("cargo:rustc-link-lib=dylib=nvcuvid");
 
-    // 4. Link nvEncodeAPI (NVENC)
+    println!("cargo:rustc-link-lib=dylib=nvcuvid");
     if cfg!(target_os = "windows") {
-        let nvenc_lib = lib_dir.join("nvencodeapi.lib");
-        if !nvenc_lib.exists() {
-            panic!("MISSING SDK: nvencodeapi.lib not found in {}. Did you copy it from the Video Codec SDK?", lib_dir.display());
-        }
         println!("cargo:rustc-link-lib=dylib=nvencodeapi");
     } else {
         println!("cargo:rustc-link-lib=dylib=nvidia-encode");
     }
 
-    // 5. Link CUDA Driver API
-    // Used for cuEventRecord, cuStreamWaitEvent, and raw pointer manipulation
-    println!("cargo:rustc-link-lib=dylib=cuda");
+    // ── FFmpeg ───────────────────────────────────────────────────────────────
+    // FFMPEG_DIR is set in .cargo/config.toml → ffmpeg-sys-next picks it up.
+    // We also add the lib path so the linker can resolve avcodec.lib etc.
+
+    if let Ok(ffmpeg_dir) = env::var("FFMPEG_DIR") {
+        let ffmpeg_lib = PathBuf::from(&ffmpeg_dir).join("lib");
+        if ffmpeg_lib.exists() {
+            println!("cargo:rustc-link-search=native={}", ffmpeg_lib.display());
+        }
+    }
 }

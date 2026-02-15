@@ -43,10 +43,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use cudarc::driver::{CudaDevice, CudaSlice, CudaStream};
+use cudarc::driver::{CudaDevice, CudaSlice, CudaStream, DeviceSlice};
 use tracing::{debug, info, warn};
 
-use crate::error::{EngineError, Result};
+use crate::error::Result;
 
 /// Hardware-preferred alignment for tensor buffers (512 B — matches
 /// NVIDIA L2 cache line and warp-coalesced access granularity).
@@ -247,15 +247,20 @@ impl GpuContext {
 
     /// Synchronize a specific stream, blocking until all enqueued work completes.
     pub fn sync_stream(stream: &CudaStream) -> Result<()> {
-        stream.synchronize()?;
-        Ok(())
+        let raw = crate::codecs::nvdec::get_raw_stream(stream);
+        unsafe {
+            crate::codecs::sys::check_cu(
+                crate::codecs::sys::cuStreamSynchronize(raw),
+                "cuStreamSynchronize",
+            )
+        }
     }
 
     /// Synchronize all three engine streams.
     pub fn sync_all(&self) -> Result<()> {
-        self.decode_stream.synchronize()?;
-        self.preprocess_stream.synchronize()?;
-        self.inference_stream.synchronize()?;
+        Self::sync_stream(&self.decode_stream)?;
+        Self::sync_stream(&self.preprocess_stream)?;
+        Self::sync_stream(&self.inference_stream)?;
         Ok(())
     }
 
@@ -300,10 +305,10 @@ impl GpuContext {
             vram_current_bytes: vram_current,
             vram_peak_bytes: vram_peak,
             vram_limit_bytes: self.vram_limit.load(Ordering::Relaxed),
-            pool_hits: stats.hits.load(Ordering::Relaxed),
-            pool_misses: stats.misses.load(Ordering::Relaxed),
+            pool_hits: stats.hits.load(Ordering::Relaxed) as usize,
+            pool_misses: stats.misses.load(Ordering::Relaxed) as usize,
             pool_hit_rate: stats.hit_rate(),
-            pool_overflows: stats.overflows.load(Ordering::Relaxed),
+            pool_overflows: stats.overflows.load(Ordering::Relaxed) as usize,
             steady_state: self.alloc_policy.is_steady_state(),
             decode_queue_depth: self.queue_depth.decode.load(Ordering::Relaxed),
             preprocess_queue_depth: self.queue_depth.preprocess.load(Ordering::Relaxed),
@@ -327,7 +332,7 @@ impl GpuContext {
     /// `device_ptr` into L2 cache on the given stream.  No-op if the driver
     /// does not support `cuMemPrefetchAsync`.
     pub fn prefetch_l2(&self, device_ptr: u64, count: usize, stream: &CudaStream) -> Result<()> {
-        extern "C" {
+        unsafe extern "C" {
             fn cuMemPrefetchAsync(
                 devPtr: u64,
                 count: usize,
@@ -346,6 +351,10 @@ impl GpuContext {
         Ok(())
     }
 }
+
+// SAFETY: GpuContext manages thread-safe CUDA usage via internal synchronization/Mutex.
+unsafe impl Send for GpuContext {}
+unsafe impl Sync for GpuContext {}
 
 impl Drop for GpuContext {
     fn drop(&mut self) {
@@ -720,7 +729,7 @@ impl StreamOverlapTimer {
     /// Stores the sample internally.
     pub fn sample(&self) -> Result<f32> {
         let mut ms: f32 = 0.0;
-        extern "C" {
+        unsafe extern "C" {
             fn cuEventElapsedTime(
                 pMilliseconds: *mut f32,
                 hStart: crate::codecs::sys::CUevent,

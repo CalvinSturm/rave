@@ -22,8 +22,8 @@
 //!    the `GpuTexture` is dropped.  This is guaranteed structurally because
 //!    `CudaSlice` holds an `Arc<CudaDevice>`.
 
+use cudarc::driver::{CudaSlice, DevicePtr};
 use std::sync::Arc;
-use cudarc::driver::CudaSlice;
 
 // ─── Pixel format ────────────────────────────────────────────────────────────
 
@@ -167,7 +167,11 @@ impl GpuTexture {
     /// Panics if `self.format != PixelFormat::Nv12`.
     #[inline]
     pub fn nv12_uv_offset(&self) -> usize {
-        assert_eq!(self.format, PixelFormat::Nv12, "nv12_uv_offset called on non-NV12 texture");
+        assert_eq!(
+            self.format,
+            PixelFormat::Nv12,
+            "nv12_uv_offset called on non-NV12 texture"
+        );
         self.pitch * (self.height as usize)
     }
 
@@ -201,15 +205,15 @@ pub struct FrameEnvelope {
     pub is_keyframe: bool,
 }
 
-/// Sentinel envelope that signals end-of-stream (EOS) through pipeline channels.
-/// When a stage receives `None` from its input channel, it must:
-/// 1. Flush any buffered state.
-/// 2. Drop its output sender to propagate EOS downstream.
-/// 3. Return cleanly.
-///
-/// This type is not used directly — we encode EOS as channel closure (sender drop).
-/// The comment exists to document the protocol.
-///
-/// ```text
-/// Decoder closes tx → Preprocess sees None → closes its tx → … → Encoder returns
-/// ```
+// Sentinel envelope that signals end-of-stream (EOS) through pipeline channels.
+// When a stage receives `None` from its input channel, it must:
+// 1. Flush any buffered state.
+// 2. Drop its output sender to propagate EOS downstream.
+// 3. Return cleanly.
+//
+// This type is not used directly — we encode EOS as channel closure (sender drop).
+// The comment exists to document the protocol.
+//
+// ```text
+// Decoder closes tx → Preprocess sees None → closes its tx → … → Encoder returns
+// ```

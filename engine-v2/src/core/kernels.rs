@@ -36,10 +36,12 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaFunction, CudaSlice, CudaStream, LaunchAsync, LaunchConfig};
-use tracing::{debug, info};
+use cudarc::driver::{
+    CudaDevice, CudaFunction, CudaStream, DevicePtr, LaunchAsync, LaunchConfig,
+};
+use tracing::info;
 
-use crate::codecs::sys::{self, CUevent, CU_EVENT_DISABLE_TIMING};
+use crate::codecs::sys::{self, CUevent};
 use crate::core::context::GpuContext;
 use crate::core::types::{GpuTexture, PixelFormat};
 use crate::error::{EngineError, Result};
@@ -50,6 +52,8 @@ use crate::error::{EngineError, Result};
 ///
 /// Compiled to PTX once via NVRTC at engine initialization.
 const PREPROCESS_CUDA_SRC: &str = r#"
+#include <cuda_fp16.h>
+
 // ============================================================================
 // BT.709 NV12 → RGB Planar Float32 (NCHW, [0,1])
 // ============================================================================
@@ -286,9 +290,11 @@ impl PreprocessKernels {
         device.load_ptx(ptx, MODULE_NAME, KERNEL_NAMES)?;
 
         let get_fn = |name: &str| -> Result<CudaFunction> {
-            device
-                .get_func(MODULE_NAME, name)
-                .ok_or_else(|| EngineError::Cuda(cudarc::driver::DriverError::InvalidKernel))
+            device.get_func(MODULE_NAME, name).ok_or_else(|| {
+                EngineError::ModelMetadata(format!(
+                    "Kernel function '{name}' not found in module '{MODULE_NAME}'"
+                ))
+            })
         };
 
         let kernels = Self {
@@ -344,7 +350,7 @@ impl PreprocessKernels {
         let uv_ptr = y_ptr + (input.pitch * h) as u64;
         let out_ptr = *output_buf.device_ptr() as u64;
 
-        let (config, block) = launch_config_2d(input.width, input.height);
+        let (config, _block) = launch_config_2d(input.width, input.height);
 
         // SAFETY:
         // - All pointers are valid device pointers from the same CudaDevice.
@@ -631,7 +637,7 @@ impl ModelInput {
                 return Err(EngineError::FormatMismatch {
                     expected: PixelFormat::RgbPlanarF32,
                     actual: other,
-                })
+                });
             }
         };
 
@@ -702,7 +708,7 @@ impl KernelTimer {
     /// completed) before calling this.
     pub fn elapsed_ms(&self) -> Result<f32> {
         let mut ms: f32 = 0.0;
-        extern "C" {
+        unsafe extern "C" {
             fn cuEventElapsedTime(
                 pMilliseconds: *mut f32,
                 hStart: CUevent,
@@ -824,7 +830,7 @@ impl PreprocessPipeline {
                 return Err(EngineError::FormatMismatch {
                     expected: PixelFormat::RgbPlanarF32,
                     actual: other,
-                })
+                });
             }
         };
 

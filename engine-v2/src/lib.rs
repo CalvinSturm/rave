@@ -23,6 +23,8 @@ pub mod core;
 pub mod debug_alloc;
 pub mod engine;
 pub mod error;
+pub mod io;
+pub mod probe_ort;
 
 #[cfg(feature = "debug-alloc")]
 #[global_allocator]

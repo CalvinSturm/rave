@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check:*)",
+      "Bash(cd:*)",
+      "Bash(cmd.exe /C \"curl -L -o C:\\\\Users\\\\Calvin\\\\Downloads\\\\ffmpeg-shared.7z https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip\")",
+      "WebSearch",
+      "WebFetch(domain:docs.rs)",
+      "Bash(find:*)",
+      "Bash(ffmpeg:*)",
+      "Bash(cargo search:*)",
+      "Bash(cargo doc:*)",
+      "Bash(grep:*)"
+    ]
+  }
+}

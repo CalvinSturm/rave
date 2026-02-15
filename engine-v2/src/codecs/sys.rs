@@ -16,7 +16,7 @@
 #![allow(non_camel_case_types, non_snake_case, dead_code)]
 
 use std::ffi::c_void;
-use std::os::raw::{c_char, c_int, c_short, c_uint, c_ulong, c_ulonglong};
+use std::os::raw::{c_int, c_short, c_uint, c_ulong, c_ulonglong};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  COMMON TYPES
@@ -279,7 +279,7 @@ pub struct CUVIDPROCPARAMS {
 
 // ─── NVDEC functions ─────────────────────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     pub fn cuvidCreateVideoParser(
         parser: *mut CUvideoparser,
         params: *mut CUVIDPARSERPARAMS,
@@ -298,7 +298,7 @@ extern "C" {
     ) -> CUresult;
 
     pub fn cuvidDecodePicture(decoder: CUvideodecoder, pic_params: *mut CUVIDPICPARAMS)
-        -> CUresult;
+    -> CUresult;
 
     pub fn cuvidMapVideoFrame64(
         decoder: CUvideodecoder,
@@ -754,7 +754,7 @@ pub struct NV_ENC_PRESET_CONFIG {
     pub reserved2: [*mut c_void; 64],
 }
 
-extern "C" {
+unsafe extern "C" {
     /// Entry point to get the NVENC function table.
     pub fn NvEncodeAPICreateInstance(
         function_list: *mut NV_ENCODE_API_FUNCTION_LIST,
@@ -770,18 +770,19 @@ pub type CUevent = *mut c_void;
 
 pub const CU_EVENT_DISABLE_TIMING: c_uint = 0x02;
 
-extern "C" {
+unsafe extern "C" {
     pub fn cuEventCreate(phEvent: *mut CUevent, Flags: c_uint) -> CUresult;
     pub fn cuEventDestroy_v2(hEvent: CUevent) -> CUresult;
     pub fn cuEventRecord(hEvent: CUevent, hStream: CUstream) -> CUresult;
     pub fn cuStreamWaitEvent(hStream: CUstream, hEvent: CUevent, Flags: c_uint) -> CUresult;
+    pub fn cuStreamSynchronize(hStream: CUstream) -> CUresult;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  CUDA DRIVER — async memcpy (for D2D copy of decoded surfaces)
 // ═══════════════════════════════════════════════════════════════════════════
 
-extern "C" {
+unsafe extern "C" {
     pub fn cuMemcpy2DAsync_v2(pCopy: *const CUDA_MEMCPY2D, hStream: CUstream) -> CUresult;
 }
 

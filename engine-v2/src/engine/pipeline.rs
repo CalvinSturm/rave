@@ -47,9 +47,8 @@
 //! `PipelineMetrics` tracks per-stage frame counts with atomic counters.
 //! Stage latency is tracked via wall-clock `Instant` timing.
 
-use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -58,7 +57,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::core::backend::UpscaleBackend;
-use crate::core::context::{GpuContext, PerfStage, StreamOverlapTimer};
+use crate::core::context::{GpuContext, PerfStage};
 use crate::core::kernels::{ModelPrecision, PreprocessKernels, PreprocessPipeline};
 use crate::core::types::{FrameEnvelope, GpuTexture, PixelFormat};
 use crate::error::{EngineError, Result};
@@ -122,7 +121,11 @@ impl PipelineMetrics {
         let enc = self.frames_encoded.load(Ordering::Relaxed);
 
         let avg = |total: &AtomicU64, count: u64| -> u64 {
-            if count > 0 { total.load(Ordering::Relaxed) / count } else { 0 }
+            if count > 0 {
+                total.load(Ordering::Relaxed) / count
+            } else {
+                0
+            }
         };
 
         info!(
@@ -213,19 +216,13 @@ impl UpscalePipeline {
     /// 3. All task handles are joined.
     /// 4. Metrics ordering invariants are validated.
     #[instrument(skip_all, name = "upscale_pipeline")]
-    pub async fn run<D, B, E>(
-        &self,
-        mut decoder: D,
-        backend: Arc<B>,
-        mut encoder: E,
-    ) -> Result<()>
+    pub async fn run<D, B, E>(&self, mut decoder: D, backend: Arc<B>, mut encoder: E) -> Result<()>
     where
         D: FrameDecoder,
         B: UpscaleBackend + 'static,
         E: FrameEncoder,
     {
-        let (tx_decoded, rx_decoded) =
-            mpsc::channel::<FrameEnvelope>(self.config.decoded_capacity);
+        let (tx_decoded, rx_decoded) = mpsc::channel::<FrameEnvelope>(self.config.decoded_capacity);
         let (tx_preprocessed, rx_preprocessed) =
             mpsc::channel::<FrameEnvelope>(self.config.preprocessed_capacity);
         let (tx_upscaled, rx_upscaled) =
@@ -245,17 +242,15 @@ impl UpscalePipeline {
         {
             let cancel = cancel.clone();
             let metrics = metrics.clone();
+            let ctx_decode = ctx.clone();
             tasks.spawn_blocking(move || -> Result<()> {
-                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    decode_stage(&mut decoder, &tx_decoded, &cancel, &metrics, &ctx.queue_depth)
-                }));
-                match result {
-                    Ok(r) => r,
-                    Err(payload) => Err(EngineError::PanicRecovered {
-                        stage: "Decode",
-                        message: format_panic(payload),
-                    }),
-                }
+                decode_stage(
+                    &mut decoder,
+                    &tx_decoded,
+                    &cancel,
+                    &metrics,
+                    &ctx_decode.queue_depth,
+                )
             });
         }
 
@@ -265,21 +260,23 @@ impl UpscalePipeline {
             let ctx = ctx.clone();
             let kernels = kernels.clone();
             let metrics = metrics.clone();
-            let profiler_ctx = if enable_profiler { Some(ctx.clone()) } else { None };
+            let profiler_ctx = if enable_profiler {
+                Some(ctx.clone())
+            } else {
+                None
+            };
             tasks.spawn(async move {
-                let result = std::panic::catch_unwind(AssertUnwindSafe(async {
-                    preprocess_stage(
-                        rx_decoded, &tx_preprocessed, &kernels, &ctx,
-                        precision, &cancel, &metrics, profiler_ctx.as_deref(),
-                    ).await
-                }));
-                match result {
-                    Ok(task) => task.await,
-                    Err(payload) => Err(EngineError::PanicRecovered {
-                        stage: "Preprocess",
-                        message: format_panic(payload),
-                    }),
-                }
+                preprocess_stage(
+                    rx_decoded,
+                    &tx_preprocessed,
+                    &kernels,
+                    &ctx,
+                    precision,
+                    &cancel,
+                    &metrics,
+                    profiler_ctx.as_deref(),
+                )
+                .await
             });
         }
 
@@ -290,22 +287,25 @@ impl UpscalePipeline {
             let ctx_c = ctx.clone();
             let kernels_c = kernels.clone();
             let metrics = metrics.clone();
-            let profiler_ctx = if enable_profiler { Some(ctx_c.clone()) } else { None };
+            let profiler_ctx = if enable_profiler {
+                Some(ctx_c.clone())
+            } else {
+                None
+            };
             tasks.spawn(async move {
-                let result = std::panic::catch_unwind(AssertUnwindSafe(async {
-                    inference_stage(
-                        rx_preprocessed, &tx_upscaled, backend.as_ref(),
-                        &kernels_c, &ctx_c, encoder_pitch, precision,
-                        &cancel, &metrics, profiler_ctx.as_deref(),
-                    ).await
-                }));
-                match result {
-                    Ok(task) => task.await,
-                    Err(payload) => Err(EngineError::PanicRecovered {
-                        stage: "Inference",
-                        message: format_panic(payload),
-                    }),
-                }
+                inference_stage(
+                    rx_preprocessed,
+                    &tx_upscaled,
+                    backend.as_ref(),
+                    &kernels_c,
+                    &ctx_c,
+                    encoder_pitch,
+                    precision,
+                    &cancel,
+                    &metrics,
+                    profiler_ctx.as_deref(),
+                )
+                .await
             });
         }
 
@@ -315,9 +315,19 @@ impl UpscalePipeline {
         {
             let cancel = cancel.clone();
             let metrics = metrics.clone();
-            let profiler_ctx = if enable_profiler { Some(ctx.clone()) } else { None };
+            let profiler_ctx = if enable_profiler {
+                Some(ctx.clone())
+            } else {
+                None
+            };
             tasks.spawn_blocking(move || -> Result<()> {
-                encode_stage(rx_upscaled, &mut encoder, &cancel, &metrics, profiler_ctx.as_deref())
+                encode_stage(
+                    rx_upscaled,
+                    &mut encoder,
+                    &cancel,
+                    &metrics,
+                    profiler_ctx.as_deref(),
+                )
             });
         }
 
@@ -339,9 +349,9 @@ impl UpscalePipeline {
                     error!(%join_err, "Pipeline task panicked");
                     cancel.cancel();
                     if first_error.is_none() {
-                        first_error = Some(EngineError::DimensionMismatch(
-                            format!("Task panic: {join_err}")
-                        ));
+                        first_error = Some(EngineError::DimensionMismatch(format!(
+                            "Task panic: {join_err}"
+                        )));
                     }
                 }
             }
@@ -435,12 +445,9 @@ impl UpscalePipeline {
                 encoder_nv12_pitch: nv12_pitch,
                 ..config.clone()
             };
-            let warmup_pipeline = UpscalePipeline::new(
-                ctx.clone(), kernels.clone(), warmup_config,
-            );
-            let warmup_decoder = MockDecoder::new(
-                ctx.clone(), width, height, nv12_pitch, warmup_frames,
-            );
+            let warmup_pipeline = UpscalePipeline::new(ctx.clone(), kernels.clone(), warmup_config);
+            let warmup_decoder =
+                MockDecoder::new(ctx.clone(), width, height, nv12_pitch, warmup_frames);
             let warmup_encoder = MockEncoder::new();
 
             info!("Stress test: warm-up phase (5s) — populating buffer pool");
@@ -448,7 +455,8 @@ impl UpscalePipeline {
             let _ = tokio::time::timeout(
                 warmup_timeout,
                 warmup_pipeline.run(warmup_decoder, backend.clone(), warmup_encoder),
-            ).await;
+            )
+            .await;
 
             // Reset pool stats so measured phase starts clean.
             ctx.pool_stats.hits.store(0, Ordering::Relaxed);
@@ -460,17 +468,13 @@ impl UpscalePipeline {
         // ── Phase 2: Measured run ──
         let target_frames = (seconds * 60) as u32;
 
-        let pipeline = UpscalePipeline::new(
-            ctx.clone(), kernels.clone(), test_config,
-        );
+        let pipeline = UpscalePipeline::new(ctx.clone(), kernels.clone(), test_config);
         let metrics = pipeline.metrics();
 
         // Snapshot VRAM after warm-up (pool is now populated).
         let (vram_before, _) = ctx.vram_usage();
 
-        let mock_decoder = MockDecoder::new(
-            ctx.clone(), width, height, nv12_pitch, target_frames,
-        );
+        let mock_decoder = MockDecoder::new(ctx.clone(), width, height, nv12_pitch, target_frames);
         let mock_encoder = MockEncoder::new();
 
         info!("Stress test: measured phase ({seconds}s)");
@@ -480,14 +484,15 @@ impl UpscalePipeline {
         let run_result = tokio::time::timeout(
             timeout_dur,
             pipeline.run(mock_decoder, backend, mock_encoder),
-        ).await;
+        )
+        .await;
 
         let elapsed = start.elapsed();
 
         let run_ok = match run_result {
             Ok(inner) => inner,
             Err(_) => Err(EngineError::DimensionMismatch(
-                "Stress test timed out — pipeline stall detected".into()
+                "Stress test timed out — pipeline stall detected".into(),
             )),
         };
 
@@ -502,7 +507,9 @@ impl UpscalePipeline {
             avg_fps: decoded as f64 / elapsed.as_secs_f64(),
             avg_latency_ms: if decoded > 0 {
                 elapsed.as_secs_f64() * 1000.0 / decoded as f64
-            } else { 0.0 },
+            } else {
+                0.0
+            },
             peak_vram_bytes: vram_peak,
             final_vram_bytes: vram_after,
             vram_before_bytes: vram_before,
@@ -588,7 +595,9 @@ pub enum AuditResult {
 }
 
 impl AuditResult {
-    pub fn is_pass(&self) -> bool { matches!(self, AuditResult::Pass(_)) }
+    pub fn is_pass(&self) -> bool {
+        matches!(self, AuditResult::Pass(_))
+    }
 }
 
 impl AuditReport {
@@ -639,7 +648,8 @@ impl AuditSuite {
             let _ = tokio::time::timeout(
                 Duration::from_secs(30),
                 pipeline.run(decoder, backend.clone(), encoder),
-            ).await;
+            )
+            .await;
         }
 
         // Reset pool stats for clean measurement.
@@ -671,7 +681,8 @@ impl AuditSuite {
         let audit_result = tokio::time::timeout(
             Duration::from_secs(300),
             pipeline.run(decoder, backend.clone(), encoder),
-        ).await;
+        )
+        .await;
 
         // Disable debug-alloc.
         crate::debug_alloc::disable();
@@ -716,7 +727,9 @@ impl AuditSuite {
         let vram_leak_check = if vram_delta <= tolerance {
             AuditResult::Pass(format!(
                 "DETERMINISM PROVEN: Δ VRAM = {}B (tolerance {}B), peak = {}MB",
-                vram_delta, tolerance, vram_peak / (1024 * 1024),
+                vram_delta,
+                tolerance,
+                vram_peak / (1024 * 1024),
             ))
         } else {
             AuditResult::Fail(format!(
@@ -728,9 +741,7 @@ impl AuditSuite {
         // ── Check 3: Pool hit rate ──
         let hit_rate = ctx.pool_stats.hit_rate();
         let pool_hit_rate_check = if hit_rate >= 90.0 {
-            AuditResult::Pass(format!(
-                "POOL STABLE: {hit_rate:.1}% hit rate"
-            ))
+            AuditResult::Pass(format!("POOL STABLE: {hit_rate:.1}% hit rate"))
         } else {
             AuditResult::Fail(format!(
                 "Pool hit rate too low: {hit_rate:.1}% (need ≥ 90%)"
@@ -792,9 +803,7 @@ impl AuditSuite {
                     failures.push(msg.clone());
                 }
             }
-            return Err(EngineError::InvariantViolation(
-                failures.join("; "),
-            ));
+            return Err(EngineError::InvariantViolation(failures.join("; ")));
         }
 
         info!("═══ AUDIT SUITE: ALL INVARIANTS VERIFIED ═══");
@@ -835,7 +844,6 @@ fn decode_stage<D: FrameDecoder>(
                 metrics.frames_decoded.fetch_add(1, Ordering::Release);
             }
             None => {
-
                 let n = metrics.frames_decoded.load(Ordering::Acquire);
                 info!(frames = n, "Decode: EOS");
                 return Ok(());
@@ -856,17 +864,15 @@ fn decode_stage<D: FrameDecoder>(
 async fn preprocess_stage(
     mut rx: mpsc::Receiver<FrameEnvelope>,
     tx: &mpsc::Sender<FrameEnvelope>,
-    kernels: &PreprocessKernels,
+    _kernels: &PreprocessKernels,
     ctx: &GpuContext,
     precision: ModelPrecision,
     cancel: &CancellationToken,
     metrics: &PipelineMetrics,
     profiler_ctx: Option<&GpuContext>,
 ) -> Result<()> {
-    let mut preprocess = PreprocessPipeline::new(
-        PreprocessKernels::compile(ctx.device())?,
-        precision,
-    );
+    let mut preprocess =
+        PreprocessPipeline::new(PreprocessKernels::compile(ctx.device())?, precision);
 
     loop {
         let frame = tokio::select! {
@@ -888,25 +894,26 @@ async fn preprocess_stage(
         ctx.queue_depth.preprocess.fetch_add(1, Ordering::Relaxed);
 
         if cancel.is_cancelled() {
-             ctx.queue_depth.preprocess.fetch_sub(1, Ordering::Relaxed);
-             break;
+            ctx.queue_depth.preprocess.fetch_sub(1, Ordering::Relaxed);
+            break;
         }
 
         let t_start = Instant::now();
 
-        let model_input = preprocess.prepare(
-            &frame.texture, ctx, &ctx.preprocess_stream,
-        )?;
+        let model_input = preprocess.prepare(&frame.texture, ctx, &ctx.preprocess_stream)?;
 
         // Stream sync before releasing NV12 buffer — ensures kernel completed.
         GpuContext::sync_stream(&ctx.preprocess_stream)?;
 
         let elapsed_us = t_start.elapsed().as_micros() as u64;
-        metrics.preprocess_total_us.fetch_add(elapsed_us, Ordering::Relaxed);
+        metrics
+            .preprocess_total_us
+            .fetch_add(elapsed_us, Ordering::Relaxed);
 
         // Phase 8: profiler hook.
         if let Some(pctx) = profiler_ctx {
-            pctx.profiler.record_stage(PerfStage::Preprocess, elapsed_us);
+            pctx.profiler
+                .record_stage(PerfStage::Preprocess, elapsed_us);
         }
 
         // Recycle the consumed NV12 buffer.
@@ -956,7 +963,7 @@ async fn inference_stage<B: UpscaleBackend>(
     mut rx: mpsc::Receiver<FrameEnvelope>,
     tx: &mpsc::Sender<FrameEnvelope>,
     backend: &B,
-    kernels: &PreprocessKernels,
+    _kernels: &PreprocessKernels,
     ctx: &GpuContext,
     encoder_pitch: usize,
     precision: ModelPrecision,
@@ -964,10 +971,7 @@ async fn inference_stage<B: UpscaleBackend>(
     metrics: &PipelineMetrics,
     profiler_ctx: Option<&GpuContext>,
 ) -> Result<()> {
-    let preprocess = PreprocessPipeline::new(
-        PreprocessKernels::compile(ctx.device())?,
-        precision,
-    );
+    let preprocess = PreprocessPipeline::new(PreprocessKernels::compile(ctx.device())?, precision);
 
     loop {
         if cancel.is_cancelled() {
@@ -1009,7 +1013,9 @@ async fn inference_stage<B: UpscaleBackend>(
         let t_infer = Instant::now();
         let upscaled_rgb = backend.process(frame.texture.clone()).await?;
         let infer_us = t_infer.elapsed().as_micros() as u64;
-        metrics.inference_total_us.fetch_add(infer_us, Ordering::Relaxed);
+        metrics
+            .inference_total_us
+            .fetch_add(infer_us, Ordering::Relaxed);
 
         // Phase 8: profiler hook — inference GPU timing.
         if let Some(pctx) = profiler_ctx {
@@ -1023,13 +1029,14 @@ async fn inference_stage<B: UpscaleBackend>(
 
         // ── Postprocess: RGB → NV12 ──
         let t_post = Instant::now();
-        let upscaled_nv12 = preprocess.postprocess(
-            upscaled_rgb, encoder_pitch, ctx, &ctx.inference_stream,
-        )?;
+        let upscaled_nv12 =
+            preprocess.postprocess(upscaled_rgb, encoder_pitch, ctx, &ctx.inference_stream)?;
 
         GpuContext::sync_stream(&ctx.inference_stream)?;
         let post_us = t_post.elapsed().as_micros() as u64;
-        metrics.postprocess_total_us.fetch_add(post_us, Ordering::Relaxed);
+        metrics
+            .postprocess_total_us
+            .fetch_add(post_us, Ordering::Relaxed);
 
         // Phase 8: profiler hook — postprocess GPU timing.
         if let Some(pctx) = profiler_ctx {
@@ -1112,7 +1119,14 @@ struct MockDecoder {
 
 impl MockDecoder {
     fn new(ctx: Arc<GpuContext>, width: u32, height: u32, pitch: usize, total: u32) -> Self {
-        Self { ctx, width, height, pitch, remaining: total, idx: 0 }
+        Self {
+            ctx,
+            width,
+            height,
+            pitch,
+            remaining: total,
+            idx: 0,
+        }
     }
 }
 
@@ -1154,7 +1168,9 @@ struct MockEncoder {
 }
 
 impl MockEncoder {
-    fn new() -> Self { Self { count: 0 } }
+    fn new() -> Self {
+        Self { count: 0 }
+    }
 }
 
 impl FrameEncoder for MockEncoder {

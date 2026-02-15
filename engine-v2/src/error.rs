@@ -37,7 +37,22 @@ pub enum EngineError {
     #[error("NVENC encode error: {0}")]
     Encode(String),
 
+    #[error("Demux error: {0}")]
+    Demux(String),
+
+    #[error("Mux error: {0}")]
+    Mux(String),
+
+    #[error("Bitstream filter error: {0}")]
+    BitstreamFilter(String),
+
+    #[error("Probe error: {0}")]
+    Probe(String),
+
     // ── Pipeline ─────────────────────────────────────────────────────
+    #[error("Pipeline error: {0}")]
+    Pipeline(String),
+
     #[error("Pipeline channel closed unexpectedly")]
     ChannelClosed,
 
@@ -101,8 +116,13 @@ impl EngineError {
             Self::NotInitialized => 202,
             Self::Decode(_) => 300,
             Self::Encode(_) => 301,
+            Self::Demux(_) => 302,
+            Self::Mux(_) => 303,
+            Self::BitstreamFilter(_) => 304,
+            Self::Probe(_) => 305,
             Self::ChannelClosed => 400,
             Self::Shutdown => 401,
+            Self::Pipeline(_) => 402,
             Self::FormatMismatch { .. } => 500,
             Self::DimensionMismatch(_) => 501,
             Self::BufferTooSmall { .. } => 502,

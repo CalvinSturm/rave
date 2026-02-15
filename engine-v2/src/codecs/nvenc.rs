@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
 
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::codecs::sys::*;
 use crate::core::types::{FrameEnvelope, PixelFormat};

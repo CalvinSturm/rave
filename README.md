@@ -1,7 +1,3 @@
-Here’s a solid, professional **README.md** draft for **VideoForge v2.0** that you can drop into your repo:
-
----
-
 # VideoForge v2.0
 
 **High-performance AI Video Upscaler & Editor Engine**

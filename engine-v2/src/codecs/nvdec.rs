@@ -39,11 +39,13 @@
 //! This ensures ordering without CPU-blocking sync.
 
 use std::collections::VecDeque;
-use std::ffi::c_void;
+use std::ffi::{c_int, c_short, c_uint, c_ulong, c_ulonglong, c_void};
 use std::ptr;
 use std::sync::Arc;
 
-use tracing::{debug, info, warn};
+use cudarc::driver::DevicePtr;
+
+use tracing::{debug, info};
 
 use crate::codecs::sys::*;
 use crate::core::context::GpuContext;
@@ -165,6 +167,8 @@ pub struct NvDecoder {
     /// Caller must wait on these before reading the texture.
     pub last_decode_event: Option<CUevent>,
 }
+
+unsafe impl Send for NvDecoder {}
 
 impl NvDecoder {
     /// Create a new hardware decoder.
@@ -493,8 +497,8 @@ unsafe extern "C" fn sequence_callback(
     user_data: *mut c_void,
     format: *mut CUVIDEOFORMAT,
 ) -> c_int {
-    let state = &mut *(user_data as *mut CallbackState);
-    let fmt = &*format;
+    let state = unsafe { &mut *(user_data as *mut CallbackState) };
+    let fmt = unsafe { &*format };
 
     state.format = Some(*fmt);
 
@@ -504,13 +508,13 @@ unsafe extern "C" fn sequence_callback(
 
     // Destroy existing decoder if resolution changed.
     if state.decoder_created && !state.decoder.is_null() {
-        cuvidDestroyDecoder(state.decoder);
+        unsafe { cuvidDestroyDecoder(state.decoder) };
         state.decoder = ptr::null_mut();
         state.decoder_created = false;
     }
 
     // Create decoder.
-    let mut create_info: CUVIDDECODECREATEINFO = std::mem::zeroed();
+    let mut create_info: CUVIDDECODECREATEINFO = unsafe { std::mem::zeroed() };
     create_info.ulWidth = fmt.coded_width as c_ulong;
     create_info.ulHeight = fmt.coded_height as c_ulong;
     create_info.ulNumDecodeSurfaces = num_surfaces as c_ulong;
@@ -533,7 +537,7 @@ unsafe extern "C" fn sequence_callback(
     create_info.ulTargetHeight = fmt.coded_height as c_ulong;
     create_info.ulNumOutputSurfaces = 2;
 
-    let result = cuvidCreateDecoder(&mut state.decoder, &mut create_info);
+    let result = unsafe { cuvidCreateDecoder(&mut state.decoder, &mut create_info) };
     if result != CUDA_SUCCESS {
         // Return 0 to signal failure to the parser.
         return 0;
@@ -550,13 +554,13 @@ unsafe extern "C" fn decode_callback(
     user_data: *mut c_void,
     pic_params: *mut CUVIDPICPARAMS,
 ) -> c_int {
-    let state = &mut *(user_data as *mut CallbackState);
+    let state = unsafe { &mut *(user_data as *mut CallbackState) };
 
     if !state.decoder_created || state.decoder.is_null() {
         return 0;
     }
 
-    let result = cuvidDecodePicture(state.decoder, pic_params);
+    let result = unsafe { cuvidDecodePicture(state.decoder, pic_params) };
     if result != CUDA_SUCCESS {
         return 0;
     }
@@ -569,14 +573,14 @@ unsafe extern "C" fn display_callback(
     user_data: *mut c_void,
     disp_info: *mut CUVIDPARSERDISPINFO,
 ) -> c_int {
-    let state = &mut *(user_data as *mut CallbackState);
+    let state = unsafe { &mut *(user_data as *mut CallbackState) };
 
     if disp_info.is_null() {
         // Null means EOS from parser.
         return 1;
     }
 
-    state.pending_display.push_back(*disp_info);
+    state.pending_display.push_back(unsafe { *disp_info });
 
     1 // Success.
 }

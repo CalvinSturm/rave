@@ -4,12 +4,20 @@ version = "2.0.0"
 edition = "2024"
 description = "GPU-native video super-resolution engine. Zero-copy NVDEC→TensorRT→NVENC pipeline."
 
+[[bin]]
+name = "videoforge"
+path = "src/main.rs"
+
 [dependencies]
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
 # CUDA Driver API — safe wrappers, stream management, kernel launch
-cudarc = { version = "0.12", features = ["driver", "nvrtc"] }
+# Note: cuda-12060 feature works with CUDA 12.8 toolkit (driver API is backwards-compatible)
+cudarc = { version = "0.12", features = ["driver", "nvrtc", "cuda-12060"] }
 
 # ONNX Runtime — TensorRT execution provider, IO binding
-ort = { version = "2.0", features = ["cuda", "tensorrt"] }
+ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
 
 # Async runtime — multi-threaded, bounded channels, cancellation
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "signal", "time"] }
@@ -24,9 +32,13 @@ async-trait = "0.1"
 
 # Structured logging
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # f16 tensor support
 half = { version = "2", features = ["num-traits"] }
+
+# FFmpeg FFI — container demux/mux (MP4, MKV, MOV, etc.)
+ffmpeg-sys-next = "8"
 
 [features]
 default = []
