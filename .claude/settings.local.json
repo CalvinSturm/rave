@@ -10,7 +10,9 @@
       "Bash(ffmpeg:*)",
       "Bash(cargo search:*)",
       "Bash(cargo doc:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(cargo.exe check)"
     ]
   }
 }
