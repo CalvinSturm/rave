@@ -2,7 +2,8 @@
 //!
 //! ```bash
 //! rave upscale --input input.mp4 --output output.mp4 --model model.onnx
-//! rave benchmark --input input.mp4 --model model.onnx --json-out bench.json
+//! rave benchmark --input input.mp4 --model model.onnx --json --json-out bench.json
+//! rave devices --json
 //! rave probe
 //! ```
 
@@ -32,6 +33,8 @@ use rave_tensorrt::tensorrt::TensorRtBackend;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
 #[cfg(target_os = "linux")]
+use std::ffi::{CStr, c_char};
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 #[cfg(target_os = "linux")]
 use std::time::UNIX_EPOCH;
@@ -55,6 +58,8 @@ enum Commands {
     Upscale(UpscaleArgs),
     /// Run benchmark and emit summary.
     Benchmark(BenchmarkArgs),
+    /// List visible CUDA devices and memory capacity.
+    Devices(DevicesArgs),
     /// Probe CUDA context initialization and print basic status.
     Probe(ProbeArgs),
 }
@@ -176,7 +181,18 @@ struct ProbeArgs {
     #[arg(short = 'd', long = "device")]
     device: Option<u32>,
 
+    /// Probe all visible CUDA devices.
+    #[arg(long = "all", default_value_t = false, conflicts_with = "device")]
+    all: bool,
+
     /// Emit JSON probe output.
+    #[arg(long = "json", default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DevicesArgs {
+    /// Emit JSON device listing.
     #[arg(long = "json", default_value_t = false)]
     json: bool,
 }
@@ -203,6 +219,48 @@ struct RuntimeSetup {
     out_width: u32,
     out_height: u32,
     nv12_pitch: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CudaDeviceInfo {
+    ordinal: i32,
+    name: String,
+    total_mem_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ProbeDeviceResult {
+    ordinal: i32,
+    name: String,
+    total_mem_bytes: u64,
+    ok: bool,
+    vram_current_mb: usize,
+    vram_peak_mb: usize,
+    error: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+type CUresult = i32;
+#[cfg(target_os = "linux")]
+type CUdevice = i32;
+
+#[cfg(target_os = "linux")]
+const CUDA_SUCCESS: CUresult = 0;
+
+#[cfg_attr(target_os = "linux", link(name = "cuda"))]
+unsafe extern "C" {
+    #[cfg(target_os = "linux")]
+    fn cuInit(flags: u32) -> CUresult;
+    #[cfg(target_os = "linux")]
+    fn cuDriverGetVersion(driver_version: *mut i32) -> CUresult;
+    #[cfg(target_os = "linux")]
+    fn cuDeviceGetCount(count: *mut i32) -> CUresult;
+    #[cfg(target_os = "linux")]
+    fn cuDeviceGet(device: *mut CUdevice, ordinal: i32) -> CUresult;
+    #[cfg(target_os = "linux")]
+    fn cuDeviceGetName(name: *mut c_char, len: i32, dev: CUdevice) -> CUresult;
+    #[cfg(target_os = "linux")]
+    fn cuDeviceTotalMem_v2(bytes: *mut usize, dev: CUdevice) -> CUresult;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -280,9 +338,14 @@ fn main() {
     init_tracing();
 
     let cli = Cli::parse();
+    let emit_json_error = matches!(
+        &cli.command,
+        Commands::Probe(args) if args.json
+    ) || matches!(&cli.command, Commands::Devices(args) if args.json);
 
     let result = match cli.command {
         Commands::Probe(args) => run_probe(args),
+        Commands::Devices(args) => run_devices(args),
         Commands::Upscale(args) => {
             let rt = build_runtime();
             rt.block_on(run_upscale(args))
@@ -296,7 +359,9 @@ fn main() {
     match result {
         Ok(()) => std::process::exit(0),
         Err(err) => {
-            tracing::error!(error = %err, code = err.error_code(), "Command failed");
+            if !emit_json_error {
+                tracing::error!(error = %err, code = err.error_code(), "Command failed");
+            }
             std::process::exit(err.error_code() as i32);
         }
     }
@@ -504,19 +569,145 @@ fn build_runtime() -> tokio::runtime::Runtime {
 }
 
 fn run_probe(args: ProbeArgs) -> Result<()> {
+    let (driver_version, devices) = match enumerate_cuda_devices() {
+        Ok(v) => v,
+        Err(err) => {
+            if args.json {
+                println!("{}", command_error_json("probe", &err.to_string()));
+            }
+            return Err(err);
+        }
+    };
+    if args.all {
+        let mut results = Vec::<ProbeDeviceResult>::new();
+        let mut successes = 0usize;
+        for dev in &devices {
+            let result = match GpuContext::new(dev.ordinal as usize) {
+                Ok(ctx) => {
+                    let (vram_current, vram_peak) = ctx.vram_usage();
+                    successes += 1;
+                    ProbeDeviceResult {
+                        ordinal: dev.ordinal,
+                        name: dev.name.clone(),
+                        total_mem_bytes: dev.total_mem_bytes,
+                        ok: true,
+                        vram_current_mb: vram_current / (1024 * 1024),
+                        vram_peak_mb: vram_peak / (1024 * 1024),
+                        error: None,
+                    }
+                }
+                Err(err) => ProbeDeviceResult {
+                    ordinal: dev.ordinal,
+                    name: dev.name.clone(),
+                    total_mem_bytes: dev.total_mem_bytes,
+                    ok: false,
+                    vram_current_mb: 0,
+                    vram_peak_mb: 0,
+                    error: Some(err.to_string()),
+                },
+            };
+            results.push(result);
+        }
+
+        if args.json {
+            println!("{}", probe_all_json(driver_version, &results));
+        } else {
+            println!("probe: all devices");
+            println!("cuda_driver_version={driver_version}");
+            for row in &results {
+                if row.ok {
+                    println!(
+                        "device={} name={} total_mem_mb={} status=ok vram_current_mb={} vram_peak_mb={}",
+                        row.ordinal,
+                        row.name,
+                        row.total_mem_bytes / (1024 * 1024),
+                        row.vram_current_mb,
+                        row.vram_peak_mb
+                    );
+                } else {
+                    println!(
+                        "device={} name={} total_mem_mb={} status=error error={}",
+                        row.ordinal,
+                        row.name,
+                        row.total_mem_bytes / (1024 * 1024),
+                        row.error.as_deref().unwrap_or("unknown")
+                    );
+                }
+            }
+        }
+
+        if successes == 0 {
+            return Err(EngineError::Pipeline(
+                "Probe failed on all visible CUDA devices".into(),
+            ));
+        }
+        return Ok(());
+    }
+
     let device = args.device.unwrap_or(0) as usize;
-    let ctx = GpuContext::new(device)?;
+    let dev_info = devices.iter().find(|d| d.ordinal as usize == device);
+    let ctx = match GpuContext::new(device) {
+        Ok(ctx) => ctx,
+        Err(err) => {
+            if args.json {
+                println!("{}", command_error_json("probe", &err.to_string()));
+            }
+            return Err(err);
+        }
+    };
     let (vram_current, vram_peak) = ctx.vram_usage();
 
     if args.json {
-        println!("{}", probe_json(device, vram_current, vram_peak));
+        println!(
+            "{}",
+            probe_json_single(
+                device,
+                dev_info.map(|d| d.name.as_str()),
+                dev_info.map(|d| d.total_mem_bytes),
+                vram_current / (1024 * 1024),
+                vram_peak / (1024 * 1024),
+                driver_version,
+            )
+        );
     } else {
         println!("probe: ok");
+        println!("cuda_driver_version={driver_version}");
         println!("device={device}");
+        if let Some(info) = dev_info {
+            println!("name={}", info.name);
+            println!("total_mem_mb={}", info.total_mem_bytes / (1024 * 1024));
+        }
         println!("vram_current_mb={}", vram_current / (1024 * 1024));
         println!("vram_peak_mb={}", vram_peak / (1024 * 1024));
     }
 
+    Ok(())
+}
+
+fn run_devices(args: DevicesArgs) -> Result<()> {
+    let (driver_version, devices) = match enumerate_cuda_devices() {
+        Ok(v) => v,
+        Err(err) => {
+            if args.json {
+                println!("{}", command_error_json("devices", &err.to_string()));
+            }
+            return Err(err);
+        }
+    };
+    if args.json {
+        println!("{}", devices_json(driver_version, &devices));
+    } else {
+        println!("devices: {}", devices.len());
+        println!("cuda_driver_version={driver_version}");
+        for dev in &devices {
+            println!(
+                "device={} name={} total_mem_mb={}",
+                dev.ordinal,
+                dev.name,
+                dev.total_mem_bytes / (1024 * 1024)
+            );
+        }
+    }
     Ok(())
 }
 
@@ -877,12 +1068,29 @@ fn json_string(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-fn probe_json(device: usize, vram_current: usize, vram_peak: usize) -> String {
+fn command_error_json(command: &str, error: &str) -> String {
     format!(
-        "{{\"command\":\"probe\",\"ok\":true,\"device\":{},\"vram_current_mb\":{},\"vram_peak_mb\":{}}}",
-        device,
-        vram_current / (1024 * 1024),
-        vram_peak / (1024 * 1024)
+        "{{\"command\":{},\"ok\":false,\"error\":{}}}",
+        json_string(command),
+        json_string(error)
+    )
+}
+
+fn probe_json_single(
+    device: usize,
+    name: Option<&str>,
+    total_mem_bytes: Option<u64>,
+    vram_current_mb: usize,
+    vram_peak_mb: usize,
+    driver_version: i32,
+) -> String {
+    let name_field = name
+        .map(json_string)
+        .unwrap_or_else(|| "\"unknown\"".to_string());
+    let total_mem_mb = total_mem_bytes.unwrap_or(0) / (1024 * 1024);
+    format!(
+        "{{\"command\":\"probe\",\"ok\":true,\"device\":{},\"name\":{},\"total_mem_mb\":{},\"cuda_driver_version\":{},\"vram_current_mb\":{},\"vram_peak_mb\":{}}}",
+        device, name_field, total_mem_mb, driver_version, vram_current_mb, vram_peak_mb
     )
 }
 
@@ -916,6 +1124,131 @@ fn upscale_json(
         vram_current_mb,
         vram_peak_mb
     )
+}
+
+fn devices_json(driver_version: i32, devices: &[CudaDeviceInfo]) -> String {
+    let entries = devices
+        .iter()
+        .map(|d| {
+            format!(
+                "{{\"device\":{},\"name\":{},\"total_mem_mb\":{}}}",
+                d.ordinal,
+                json_string(&d.name),
+                d.total_mem_bytes / (1024 * 1024)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"command\":\"devices\",\"ok\":true,\"cuda_driver_version\":{},\"devices\":[{}]}}",
+        driver_version, entries
+    )
+}
+
+fn probe_all_json(driver_version: i32, rows: &[ProbeDeviceResult]) -> String {
+    let ok = rows.iter().any(|r| r.ok);
+    let entries = rows
+        .iter()
+        .map(|r| {
+            let err = r
+                .error
+                .as_deref()
+                .map(json_string)
+                .unwrap_or_else(|| "null".to_string());
+            format!(
+                "{{\"device\":{},\"name\":{},\"total_mem_mb\":{},\"ok\":{},\"vram_current_mb\":{},\"vram_peak_mb\":{},\"error\":{}}}",
+                r.ordinal,
+                json_string(&r.name),
+                r.total_mem_bytes / (1024 * 1024),
+                r.ok,
+                r.vram_current_mb,
+                r.vram_peak_mb,
+                err
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"command\":\"probe\",\"ok\":{},\"all\":true,\"cuda_driver_version\":{},\"results\":[{}]}}",
+        ok, driver_version, entries
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn enumerate_cuda_devices() -> Result<(i32, Vec<CudaDeviceInfo>)> {
+    // SAFETY: CUDA Driver API call with constant flags.
+    let rc_init = unsafe { cuInit(0) };
+    if rc_init != CUDA_SUCCESS {
+        return Err(EngineError::Pipeline(format!(
+            "cuInit failed with rc={rc_init}; run `scripts/run_cuda_probe.sh` for diagnostics"
+        )));
+    }
+
+    let mut driver_version = -1i32;
+    // SAFETY: valid out pointer.
+    let rc_drv = unsafe { cuDriverGetVersion(&mut driver_version as *mut i32) };
+    if rc_drv != CUDA_SUCCESS {
+        return Err(EngineError::Pipeline(format!(
+            "cuDriverGetVersion failed with rc={rc_drv}"
+        )));
+    }
+
+    let mut count = 0i32;
+    // SAFETY: valid out pointer.
+    let rc_count = unsafe { cuDeviceGetCount(&mut count as *mut i32) };
+    if rc_count != CUDA_SUCCESS {
+        return Err(EngineError::Pipeline(format!(
+            "cuDeviceGetCount failed with rc={rc_count}"
+        )));
+    }
+
+    let mut devices = Vec::<CudaDeviceInfo>::new();
+    for ordinal in 0..count {
+        let mut dev = -1i32;
+        // SAFETY: valid out pointer and ordinal within declared range.
+        let rc_get = unsafe { cuDeviceGet(&mut dev as *mut CUdevice, ordinal) };
+        if rc_get != CUDA_SUCCESS {
+            return Err(EngineError::Pipeline(format!(
+                "cuDeviceGet({ordinal}) failed with rc={rc_get}"
+            )));
+        }
+
+        let mut name_buf = [0 as c_char; 100];
+        // SAFETY: valid output buffer and device handle.
+        let rc_name = unsafe { cuDeviceGetName(name_buf.as_mut_ptr(), name_buf.len() as i32, dev) };
+        if rc_name != CUDA_SUCCESS {
+            return Err(EngineError::Pipeline(format!(
+                "cuDeviceGetName({ordinal}) failed with rc={rc_name}"
+            )));
+        }
+        let name = unsafe { CStr::from_ptr(name_buf.as_ptr()) }
+            .to_string_lossy()
+            .trim()
+            .to_string();
+
+        let mut total_mem = 0usize;
+        // SAFETY: valid out pointer and device handle.
+        let rc_mem = unsafe { cuDeviceTotalMem_v2(&mut total_mem as *mut usize, dev) };
+        if rc_mem != CUDA_SUCCESS {
+            return Err(EngineError::Pipeline(format!(
+                "cuDeviceTotalMem_v2({ordinal}) failed with rc={rc_mem}"
+            )));
+        }
+
+        devices.push(CudaDeviceInfo {
+            ordinal,
+            name,
+            total_mem_bytes: total_mem as u64,
+        });
+    }
+    Ok((driver_version, devices))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn enumerate_cuda_devices() -> Result<(i32, Vec<CudaDeviceInfo>)> {
+    Err(EngineError::Pipeline(
+        "Device enumeration is currently supported on Linux only".into(),
+    ))
 }
 
 fn is_nvenc_failure(err: &EngineError) -> bool {

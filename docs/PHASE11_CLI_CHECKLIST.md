@@ -18,20 +18,20 @@ Scope guardrails:
 
 ## Proposed PR Slices
 
-1. PR11-1: Help + Structured JSON Contract
+1. PR11-1: Help + Structured JSON Contract (Done)
 - Improve top-level help examples.
 - Add explicit `--json` output mode to command flows.
 - Keep JSON file output behavior (`--json-out`) deterministic.
 - Add/adjust CLI tests for JSON + non-JSON output.
 - Update README CLI quickstart.
 
-2. PR11-2: Devices + Probe Ergonomics
+2. PR11-2: Devices + Probe Ergonomics (Done)
 - Add `rave devices` command for quick device listing.
 - Improve `probe` output for operator troubleshooting.
 - Add tests for `devices`/`probe --help` and JSON shape.
 - Update docs with probe/devices runbook.
 
-3. PR11-3: Progress Output UX
+3. PR11-3: Progress Output UX (Next)
 - Add opt-in progress output for long-running commands.
 - Keep output deterministic and non-noisy.
 - Add tests for flag wiring/help and progress mode behavior.

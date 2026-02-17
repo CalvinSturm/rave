@@ -39,11 +39,17 @@ target/debug/rave probe
 # Structured probe JSON
 target/debug/rave probe --json
 
+# Probe all devices
+target/debug/rave probe --all
+
 # Human-readable benchmark summary
 target/debug/rave benchmark --input in.mp4 --model model.onnx --skip-encode
 
 # Structured benchmark JSON on stdout (+ file output)
 target/debug/rave benchmark --input in.mp4 --model model.onnx --skip-encode --json --json-out /tmp/bench.json
+
+# Device inventory
+target/debug/rave devices --json
 ```
 
 ## WSL2 + CUDA + ONNX Runtime TensorRT EP

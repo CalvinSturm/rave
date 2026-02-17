@@ -38,6 +38,7 @@ fn help_lists_subcommands() {
         "missing benchmark in help output"
     );
     assert!(stdout.contains("probe"), "missing probe in help output");
+    assert!(stdout.contains("devices"), "missing devices in help output");
 }
 
 #[test]
@@ -66,6 +67,41 @@ fn benchmark_help_lists_skip_encode_and_json_out() {
         stdout.contains("--json"),
         "missing --json in benchmark help"
     );
+}
+
+#[test]
+fn probe_help_lists_all_and_json() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rave"))
+        .args(["probe", "--help"])
+        .output()
+        .expect("run rave probe --help");
+
+    assert!(
+        output.status.success(),
+        "probe --help failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--all"), "missing --all in probe help");
+    assert!(stdout.contains("--json"), "missing --json in probe help");
+}
+
+#[test]
+fn devices_help_lists_json() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rave"))
+        .args(["devices", "--help"])
+        .output()
+        .expect("run rave devices --help");
+
+    assert!(
+        output.status.success(),
+        "devices --help failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--json"), "missing --json in devices help");
 }
 
 #[test]
