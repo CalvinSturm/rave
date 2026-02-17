@@ -1,101 +1,113 @@
-# RAVE — Zero-Copy GPU Video Inference Pipeline in Rust
+# RAVE
 
-**RAVE (Rust Accelerated Video Engine)** is a high-performance, hardware-accelerated video inference engine built in Rust that leverages **:contentReference[oaicite:0]{index=0} NVDEC**, **:contentReference[oaicite:1]{index=1}**, **:contentReference[oaicite:2]{index=2}**, and **:contentReference[oaicite:3]{index=3}** for fully zero-copy video processing pipelines.
+RAVE is a Rust-native, GPU-resident AI video engine with a bounded decode -> preprocess -> inference -> encode pipeline.
 
-Unlike Python-based solutions that rely on subprocesses (e.g. piping through **:contentReference[oaicite:4]{index=4}**) or heavy memory copying between CPU and GPU, RAVE keeps frame data strictly on the GPU. Frames are decoded, preprocessed, inferred, and re-encoded without ever touching system RAM, maximizing throughput for tasks such as super-resolution, interpolation, and restoration.
+## Workspace Layout
 
 ```text
-┌──────────────┐      ┌──────────────────┐      ┌────────────────┐      ┌────────────────┐
-│  Input File  │  ➔   │   NVDEC Engine   │  ➔   │  CUDA Preproc  │  ➔   │   TensorRT     │
-│  (H.264/HEVC)│      │  (NV12 Surface)  │      │ (NV12 → RGB32) │      │  (ONNX Model)  │
-└──────────────┘      └──────────────────┘      └────────────────┘      └──────┬─────────┘
-                                                                                │
-┌──────────────┐      ┌──────────────────┐      ┌────────────────┐              │
-│ Output File  │  🠔   │   NVENC Engine   │  🠔   │  CUDA Postproc │  🠔           │
-│ (MP4/MKV)    │      │ (H.264 / HEVC)   │      │ (RGB32 → NV12) │              │
-└──────────────┘      └──────────────────┘      └────────────────┘              ▼
-````
-
----
-
-## Why this exists
-
-Most video AI workflows glue FFmpeg to PyTorch via pipes, incurring massive PCIe bus overhead and CPU↔GPU context switching costs. RAVE demonstrates how to build a **production-grade, native Rust video engine** where the CPU only orchestrates control flow while the GPU owns the entire data lifecycle.
-
-RAVE is intended both as:
-
-* A practical engine for high-throughput video ML workloads
-* A reference architecture for engineers building low-latency, GPU-resident media systems in Rust
-
----
-
-## Key Features
-
-* **Hardware Decoding:** Direct NVDEC integration for decoding compressed H.264/HEVC streams directly into GPU memory.
-* **TensorRT Inference:** Optimized FP16 / INT8 inference via the ONNX Runtime TensorRT execution provider.
-* **Zero-Copy Preprocessing:** Custom CUDA kernels perform NV12 ↔ RGB planar conversion, normalization, and layout transforms entirely in VRAM.
-* **Hardware Encoding:** Pipelined NVENC output for efficient video compression.
-* **Pure Rust Architecture:** ~8K LOC using bounded async channels, `tokio` executors, and RAII-based FFI safety.
-
----
-
-## Architecture & Data Flow
-
-RAVE uses a bounded, backpressured pipeline with a bucketed GPU memory pool to control VRAM usage.
-
-1. **Demux:** Container packets are extracted.
-2. **Decode:** NVDEC writes frames into semi-planar NV12 CUDA surfaces.
-3. **Preprocess:** CUDA kernels convert NV12 → RGB planar `f32` (NCHW).
-4. **Inference:** TensorRT executes the neural network on the GPU.
-5. **Postprocess:** CUDA kernels convert RGB back to NV12.
-6. **Encode:** NVENC compresses the resulting frames into the output bitstream.
-
-A full breakdown of concurrency, memory ownership, and backpressure can be found in [`ARCHITECTURE.md`](ARCHITECTURE.md).
-
----
-
-## Quick Start
-
-### Prerequisites
-
-* NVIDIA GPU (Pascal or newer)
-* CUDA Toolkit 12.x
-* NVIDIA Video Codec SDK
-* FFmpeg development libraries
-* Rust (stable toolchain)
-
-### Installation
-
-```bash
-git clone https://github.com/CalvinSturm/rave.git
-cd rave
-# Ensure CUDA_PATH and ONNX Runtime libraries are available in LD_LIBRARY_PATH
-cargo build --release --package rave-engine
+rave/
+├── crates/
+│   ├── rave-core/
+│   ├── rave-cuda/
+│   ├── rave-tensorrt/
+│   ├── rave-nvcodec/
+│   ├── rave-ffmpeg/
+│   └── rave-pipeline/
+├── rave-cli/
+├── examples/
+└── Cargo.toml
 ```
 
----
-
-## Usage
+## Build
 
 ```bash
-./target/release/rave \
-  --input "input.mp4" \
-  --output "upscaled.mp4" \
-  --model "realesrgan.onnx" \
-  --scale 4
+cargo build --workspace
 ```
 
----
+## Test
 
-## Project Status
+```bash
+cargo test --workspace
+```
 
-* ✅ **Core Pipeline:** NVDEC → CUDA → TensorRT → NVENC fully operational.
-* ✅ **Memory Management:** Bucketed pool allocator with VRAM accounting.
-* 🚧 **Audio:** Audio passthrough is experimental.
-* 🚧 **UI:** CLI is stable; GUI layer is early-stage.
+## CLI Quickstart
 
----
+```bash
+# Human-readable probe
+target/debug/rave probe
 
-## License
+# Structured probe JSON
+target/debug/rave probe --json
 
-MIT © Calvin Sturm
+# Human-readable benchmark summary
+target/debug/rave benchmark --input in.mp4 --model model.onnx --skip-encode
+
+# Structured benchmark JSON on stdout (+ file output)
+target/debug/rave benchmark --input in.mp4 --model model.onnx --skip-encode --json --json-out /tmp/bench.json
+```
+
+## WSL2 + CUDA + ONNX Runtime TensorRT EP
+
+RAVE can run under WSL2 with NVIDIA GPU acceleration. ONNX Runtime is linked statically in this build, and TensorRT EP provider plugins are loaded dynamically. TensorRT EP requires the provider bridge symbol `Provider_GetHost` from `libonnxruntime_providers_shared.so`.
+
+RAVE now preloads that bridge (`RTLD_GLOBAL`) before TensorRT EP registration, then:
+- uses TensorRT EP when registration succeeds
+- falls back to CUDA EP with a clear warning when TensorRT EP cannot be loaded
+
+### Required system libraries (WSL)
+
+1. NVIDIA WSL driver libs must be visible (typically `/usr/lib/wsl/lib`).
+2. CUDA 12 user-space libs must be resolvable (for example `libcudart.so.12`, `libcublas.so.12`).
+3. TensorRT 10 + parser + cuDNN 9 libs must be resolvable (`libnvinfer.so.10`, `libnvonnxparser.so.10`, `libcudnn.so.9`).
+
+Prefer persistent linker config (`ldconfig`) over ad-hoc shell exports.
+
+### Runtime provider control
+
+Use `RAVE_ORT_TENSORRT`:
+- `auto` (default): try TensorRT EP, then fallback to CUDA EP on failure
+- `on` / `trt-only`: require TensorRT EP (initialization fails if unavailable)
+- `off` / `cuda-only`: skip TensorRT EP and use CUDA EP directly
+
+### Verify linkage and startup
+
+```bash
+D="$(ls -d ~/.cache/ort.pyke.io/dfbin/x86_64-unknown-linux-gnu/* | tail -n1)"
+ldd -r "$D/libonnxruntime_providers_shared.so"
+LD_PRELOAD="$D/libonnxruntime_providers_shared.so" ldd -r "$D/libonnxruntime_providers_tensorrt.so"
+nm -D "$D/libonnxruntime_providers_shared.so" | grep Provider_GetHost
+
+cargo run -p rave-cli --bin rave -- \
+  upscale \
+  --input <input.mp4> \
+  --output <output.mp4> \
+  --model <model.onnx>
+```
+
+Expected startup logs:
+- `ORT execution provider selected provider=TensorrtExecutionProvider`, or
+- warning about TensorRT EP registration failure followed by `provider=CUDAExecutionProvider`
+
+## Docs
+
+```bash
+cargo doc --workspace --no-deps
+```
+
+## Examples
+
+```bash
+cargo run --example simple_upscale
+cargo run --example progress_callback
+cargo run --example custom_kernel
+cargo run --example batch_directory
+cargo run --example benchmark
+```
+
+## Prelude
+
+`rave::prelude` re-exports common types and pipeline entry types:
+
+- `GpuTexture`, `FrameEnvelope`, `PixelFormat`
+- `PipelineConfig`, `UpscalePipeline`
+- `EngineError`, `Result`

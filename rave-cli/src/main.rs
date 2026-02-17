@@ -41,7 +41,8 @@ use std::time::UNIX_EPOCH;
     name = "rave",
     version,
     about = "GPU-native video engine",
-    arg_required_else_help = true
+    arg_required_else_help = true,
+    after_help = "Examples:\n  rave probe --json\n  rave upscale --input in.mp4 --output out.mp4 --model model.onnx\n  rave benchmark --input in.mp4 --model model.onnx --skip-encode --json\n  rave benchmark --input in.mp4 --model model.onnx --skip-encode --json-out /tmp/bench.json"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -52,7 +53,7 @@ struct Cli {
 enum Commands {
     /// Run full decode → infer → encode upscale pipeline.
     Upscale(UpscaleArgs),
-    /// Run benchmark and emit JSON summary.
+    /// Run benchmark and emit summary.
     Benchmark(BenchmarkArgs),
     /// Probe CUDA context initialization and print basic status.
     Probe(ProbeArgs),
@@ -129,6 +130,10 @@ struct UpscaleArgs {
     /// Parse/resolve inputs only, skip GPU execution.
     #[arg(long = "dry-run", default_value_t = false)]
     dry_run: bool,
+
+    /// Emit structured JSON output to stdout.
+    #[arg(long = "json", default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -156,7 +161,11 @@ struct BenchmarkArgs {
     #[arg(long = "json-out")]
     json_out: Option<PathBuf>,
 
-    /// Parse/resolve inputs only, emit synthetic benchmark JSON.
+    /// Emit benchmark JSON to stdout (human-readable summary by default).
+    #[arg(long = "json", default_value_t = false)]
+    json: bool,
+
+    /// Parse/resolve inputs only, emit synthetic benchmark summary.
     #[arg(long = "dry-run", default_value_t = false)]
     dry_run: bool,
 }
@@ -220,13 +229,24 @@ impl BenchmarkSummary {
         };
 
         format!(
-            "{{\"fps\":{},\"frames\":{},\"elapsed_ms\":{},\"stages\":{{\"decode\":{},\"infer\":{},\"encode\":{}}}}}",
+            "{{\"command\":\"benchmark\",\"ok\":true,\"fps\":{},\"frames\":{},\"elapsed_ms\":{},\"stages\":{{\"decode\":{},\"infer\":{},\"encode\":{}}}}}",
             json_number(self.fps),
             self.frames,
             json_number(self.elapsed_ms),
             json_number(self.decode_avg_us),
             json_number(self.infer_avg_us),
             encode_field
+        )
+    }
+
+    fn to_human(&self) -> String {
+        let encode = match self.encode_avg_us {
+            Some(v) => format!("{:.3}", v),
+            None => "skipped".to_string(),
+        };
+        format!(
+            "benchmark: frames={} fps={:.3} elapsed_ms={:.3} decode_avg_us={:.3} infer_avg_us={:.3} encode_avg_us={}",
+            self.frames, self.fps, self.elapsed_ms, self.decode_avg_us, self.infer_avg_us, encode
         )
     }
 }
@@ -489,12 +509,7 @@ fn run_probe(args: ProbeArgs) -> Result<()> {
     let (vram_current, vram_peak) = ctx.vram_usage();
 
     if args.json {
-        println!(
-            "{{\"ok\":true,\"device\":{},\"vram_current_mb\":{},\"vram_peak_mb\":{}}}",
-            device,
-            vram_current / (1024 * 1024),
-            vram_peak / (1024 * 1024)
-        );
+        println!("{}", probe_json(device, vram_current, vram_peak));
     } else {
         println!("probe: ok");
         println!("device={device}");
@@ -510,17 +525,37 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
 
     let resolved = resolve_input(&args.shared)?;
     if args.dry_run {
-        println!(
-            "dry-run: command=upscale input={} output={} model={} codec={:?} resolution={}x{} fps={}/{}",
-            args.shared.input.display(),
-            args.output.display(),
-            args.shared.model.display(),
-            resolved.codec,
-            resolved.width,
-            resolved.height,
-            resolved.fps_num,
-            resolved.fps_den
-        );
+        if args.json {
+            println!(
+                "{}",
+                upscale_json(
+                    true,
+                    &args.shared.input,
+                    &args.output,
+                    &args.shared.model,
+                    resolved.codec,
+                    resolved.width,
+                    resolved.height,
+                    resolved.fps_num,
+                    resolved.fps_den,
+                    0.0,
+                    0,
+                    0,
+                )
+            );
+        } else {
+            println!(
+                "dry-run: command=upscale input={} output={} model={} codec={:?} resolution={}x{} fps={}/{}",
+                args.shared.input.display(),
+                args.output.display(),
+                args.shared.model.display(),
+                resolved.codec,
+                resolved.width,
+                resolved.height,
+                resolved.fps_num,
+                resolved.fps_den
+            );
+        }
         return Ok(());
     }
 
@@ -561,6 +596,32 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
         vram_peak_mb = vram_peak / (1024 * 1024),
         "Upscale complete"
     );
+    if args.json {
+        println!(
+            "{}",
+            upscale_json(
+                false,
+                &args.shared.input,
+                &args.output,
+                &args.shared.model,
+                resolved.codec,
+                resolved.width,
+                resolved.height,
+                resolved.fps_num,
+                resolved.fps_den,
+                elapsed.as_secs_f64() * 1000.0,
+                vram_current / (1024 * 1024),
+                vram_peak / (1024 * 1024),
+            )
+        );
+    } else {
+        println!(
+            "upscale: ok output={} elapsed_s={:.3} vram_peak_mb={}",
+            args.output.display(),
+            elapsed.as_secs_f64(),
+            vram_peak / (1024 * 1024)
+        );
+    }
 
     Ok(())
 }
@@ -569,6 +630,7 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
     ensure_required_paths(&args.shared)?;
 
     let resolved = resolve_input(&args.shared)?;
+    let emit_json_stdout = args.json;
     if args.dry_run {
         let summary = BenchmarkSummary {
             fps: 0.0,
@@ -578,7 +640,7 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
             infer_avg_us: 0.0,
             encode_avg_us: None,
         };
-        emit_benchmark_json(&summary, args.json_out.as_deref())?;
+        emit_benchmark_output(&summary, args.json_out.as_deref(), emit_json_stdout)?;
         return Ok(());
     }
 
@@ -597,7 +659,7 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
                 infer_avg_us: 0.0,
                 encode_avg_us: None,
             };
-            emit_benchmark_json(&summary, args.json_out.as_deref())?;
+            emit_benchmark_output(&summary, args.json_out.as_deref(), emit_json_stdout)?;
             return Ok(());
         }
         Err(err) => return Err(err),
@@ -630,7 +692,7 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
     let summary = result?;
     shutdown_result?;
 
-    emit_benchmark_json(&summary, args.json_out.as_deref())?;
+    emit_benchmark_output(&summary, args.json_out.as_deref(), emit_json_stdout)?;
     Ok(())
 }
 
@@ -702,9 +764,17 @@ Run with: LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda-12/targets/x86_64-lin
     ))
 }
 
-fn emit_benchmark_json(summary: &BenchmarkSummary, json_out: Option<&Path>) -> Result<()> {
+fn emit_benchmark_output(
+    summary: &BenchmarkSummary,
+    json_out: Option<&Path>,
+    emit_json_stdout: bool,
+) -> Result<()> {
     let json = summary.to_json();
-    println!("{json}");
+    if emit_json_stdout {
+        println!("{json}");
+    } else {
+        println!("{}", summary.to_human());
+    }
 
     if let Some(path) = json_out {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -795,6 +865,57 @@ fn json_number(v: f64) -> String {
     } else {
         "0.0".to_string()
     }
+}
+
+fn json_string(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("\"{escaped}\"")
+}
+
+fn probe_json(device: usize, vram_current: usize, vram_peak: usize) -> String {
+    format!(
+        "{{\"command\":\"probe\",\"ok\":true,\"device\":{},\"vram_current_mb\":{},\"vram_peak_mb\":{}}}",
+        device,
+        vram_current / (1024 * 1024),
+        vram_peak / (1024 * 1024)
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upscale_json(
+    dry_run: bool,
+    input: &Path,
+    output: &Path,
+    model: &Path,
+    codec: cudaVideoCodec,
+    width: u32,
+    height: u32,
+    fps_num: u32,
+    fps_den: u32,
+    elapsed_ms: f64,
+    vram_current_mb: usize,
+    vram_peak_mb: usize,
+) -> String {
+    format!(
+        "{{\"command\":\"upscale\",\"ok\":true,\"dry_run\":{},\"input\":{},\"output\":{},\"model\":{},\"codec\":{},\"width\":{},\"height\":{},\"fps_num\":{},\"fps_den\":{},\"elapsed_ms\":{},\"vram_current_mb\":{},\"vram_peak_mb\":{}}}",
+        dry_run,
+        json_string(&input.display().to_string()),
+        json_string(&output.display().to_string()),
+        json_string(&model.display().to_string()),
+        json_string(&format!("{codec:?}")),
+        width,
+        height,
+        fps_num,
+        fps_den,
+        json_number(elapsed_ms),
+        vram_current_mb,
+        vram_peak_mb
+    )
 }
 
 fn is_nvenc_failure(err: &EngineError) -> bool {
