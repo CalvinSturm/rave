@@ -1,0 +1,14 @@
+# RAVE engine-v2 build configuration
+#
+# FFmpeg:    points ffmpeg-sys-next at our bundled FFmpeg distribution.
+# CUDA:      CUDA_PATH is typically set system-wide by the NVIDIA installer.
+# libclang:  required by bindgen (used by ffmpeg-sys-next) for C header parsing.
+#
+# PKG_CONFIG: disabled to prevent conda/MSYS2 pkg-config from returning
+#             wrong paths (e.g., /usr/include) on Windows.
+
+[env]
+FFMPEG_DIR = "C:\\Users\\Calvin\\Software Projects\\VideoForgeV2.0\\third_party\\ffmpeg"
+LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
+# Prevent pkg-config from interfering — FFMPEG_DIR is authoritative.
+PKG_CONFIG = "nonexistent"

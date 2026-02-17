@@ -1,6 +1,6 @@
-# VideoForge v2.0 — Comprehensive Technical Audit
+# RAVE v0.1 — Comprehensive Technical Audit
 
-**Codebase**: `engine-v2/` (~7,943 lines of Rust)
+**Codebase**: `legacy/engine-v2/` (~7,943 lines of Rust)
 **Edition**: Rust 2024
 **Date**: 2026-02-15
 
@@ -49,7 +49,7 @@
 
 ## 1. Executive Summary
 
-VideoForge v2.0 is a GPU-native video super-resolution engine written in Rust. It upscales video files using AI inference (ONNX models executed via TensorRT) while keeping **all frame data exclusively on the GPU** throughout the entire pipeline. The architecture is:
+RAVE v2.0 is a GPU-native video super-resolution engine written in Rust. It upscales video files using AI inference (ONNX models executed via TensorRT) while keeping **all frame data exclusively on the GPU** throughout the entire pipeline. The architecture is:
 
 ```
 NVDEC (HW decode) → CUDA Preprocess → TensorRT Inference → CUDA Postprocess → NVENC (HW encode)
@@ -72,7 +72,7 @@ The codebase is approximately 7,943 lines across 26 Rust source files, organized
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────┐
-│                              VideoForge v2.0 Pipeline                           │
+│                              RAVE v2.0 Pipeline                           │
 │                                                                                  │
 │  ┌──────────┐  ch(4)  ┌────────────┐  ch(2)  ┌───────────┐  ch(4)  ┌──────────┐│
 │  │ Decoder  │────────►│ Preprocess │────────►│ Inference │────────►│ Encoder  ││
@@ -301,7 +301,7 @@ When `debug-alloc` feature is active, installs `TrackingAllocator` as the `#[glo
 
 **Color space**: BT.709 (HD/4K standard). Full-range conversion. Not configurable at runtime.
 
-**Compilation**: NVRTC compiles CUDA C to PTX once at engine startup. Options: `ftz=true` (flush denorms), `prec_div=false` (fast division), `prec_sqrt=false`. The PTX is loaded into the device as a named module (`videoforge_preprocess`), and kernel function handles are resolved once and reused.
+**Compilation**: NVRTC compiles CUDA C to PTX once at engine startup. Options: `ftz=true` (flush denorms), `prec_div=false` (fast division), `prec_sqrt=false`. The PTX is loaded into the device as a named module (`rave_preprocess`), and kernel function handles are resolved once and reused.
 
 **Key types:**
 
@@ -726,7 +726,7 @@ Used by the TensorRT backend's `process()` method and the `AuditSuite` to verify
 ## 5. CLI & Configuration Reference
 
 ```
-videoforge -i <INPUT> -o <OUTPUT> -m <MODEL> [OPTIONS]
+rave -i <INPUT> -o <OUTPUT> -m <MODEL> [OPTIONS]
 ```
 
 | Flag | Long | Type | Default | Module(s) | Description |
@@ -750,7 +750,7 @@ videoforge -i <INPUT> -o <OUTPUT> -m <MODEL> [OPTIONS]
 **Environment variables:**
 | Variable | Purpose |
 |---|---|
-| `RUST_LOG` | Tracing filter (e.g., `debug`, `videoforge=trace`, `info`) |
+| `RUST_LOG` | Tracing filter (e.g., `debug`, `rave=trace`, `info`) |
 | `CUDA_PATH` | CUDA toolkit root (set by NVIDIA installer) |
 | `FFMPEG_DIR` | FFmpeg root with `lib/`, `include/`, `bin/` (set in `.cargo/config.toml`) |
 

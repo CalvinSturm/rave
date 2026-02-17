@@ -1,0 +1,229 @@
+warning: videoforge-engine@2.0.0: MISSING SDK: nvcuvid.lib not found in C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\lib\x64. Did you copy it from the Video Codec SDK?
+warning: videoforge-engine@2.0.0: MISSING SDK: nvencodeapi.lib not found in C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\lib\x64. Did you copy it from the Video Codec SDK?
+    Checking videoforge-engine v2.0.0 (C:\Users\Calvin\Software Projects\VideoForgeV2.0\engine-v2)
+warning: unused import: `error`
+  --> src\backends\tensorrt.rs:42:22
+   |
+42 | use tracing::{debug, error, info, warn};
+   |                      ^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `LaunchAsync` and `LaunchConfig`
+  --> src\codecs\nvdec.rs:46:46
+   |
+46 | use cudarc::driver::{DevicePtr, DeviceSlice, LaunchAsync, LaunchConfig};
+   |                                              ^^^^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused import: `warn`
+  --> src\codecs\nvdec.rs:48:28
+   |
+48 | use tracing::{debug, info, warn};
+   |                            ^^^^
+
+warning: unused import: `warn`
+  --> src\codecs\nvenc.rs:38:28
+   |
+38 | use tracing::{debug, info, warn};
+   |                            ^^^^
+
+warning: unused import: `c_char`
+  --> src\codecs\sys.rs:19:20
+   |
+19 | use std::os::raw::{c_char, c_int, c_short, c_uint, c_ulong, c_ulonglong};
+   |                    ^^^^^^
+
+warning: unused import: `EngineError`
+  --> src\core\context.rs:49:20
+   |
+49 | use crate::error::{EngineError, Result};
+   |                    ^^^^^^^^^^^
+
+warning: unused import: `CudaSlice`
+  --> src\core\kernels.rs:40:31
+   |
+40 |     CudaDevice, CudaFunction, CudaSlice, CudaStream, DevicePtr, LaunchAsync, LaunchConfig,
+   |                               ^^^^^^^^^
+
+warning: unused import: `debug`
+  --> src\core\kernels.rs:42:15
+   |
+42 | use tracing::{debug, info};
+   |               ^^^^^
+
+warning: unused import: `CU_EVENT_DISABLE_TIMING`
+  --> src\core\kernels.rs:44:32
+   |
+44 | use crate::codecs::sys::{self, CU_EVENT_DISABLE_TIMING, CUevent};
+   |                                ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::panic::AssertUnwindSafe`
+  --> src\engine\pipeline.rs:50:5
+   |
+50 | use std::panic::AssertUnwindSafe;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `StreamOverlapTimer`
+  --> src\engine\pipeline.rs:61:51
+   |
+61 | use crate::core::context::{GpuContext, PerfStage, StreamOverlapTimer};
+   |                                                   ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ort::sys as ort_sys`
+ --> src\probe_ort.rs:1:5
+  |
+1 | use ort::sys as ort_sys;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ort::value::Value as OrtValue`
+ --> src\probe_ort.rs:2:5
+  |
+2 | use ort::value::Value as OrtValue;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0382]: borrow of moved value: `ctx`
+   --> src\engine\pipeline.rs:260:23
+    |
+233 |         let ctx = self.ctx.clone();
+    |             --- move occurs because `ctx` has type `Arc<GpuContext>`, which does not implement the `Copy` trait
+...
+246 |             tasks.spawn_blocking(move || -> Result<()> {
+    |                                  --------------------- value moved into closure here
+...
+252 |                     &ctx.queue_depth,
+    |                      --- variable moved due to use in closure
+...
+260 |             let ctx = ctx.clone();
+    |                       ^^^ value borrowed here after move
+    |
+help: consider cloning the value before moving it into the closure
+    |
+246 ~             let value = ctx.clone();
+247 ~             tasks.spawn_blocking(move || -> Result<()> {
+248 |                 decode_stage(
+...
+252 |                     &metrics,
+253 ~                     &value.queue_depth,
+    |
+
+error[E0614]: type `u64` cannot be dereferenced
+   --> src\backends\tensorrt.rs:677:25
+    |
+677 |         let input_ptr = *input.device_ptr();
+    |                         ^^^^^^^^^^^^^^^^^^^ can't be dereferenced
+
+error[E0599]: no method named `synchronize` found for reference `&CudaStream` in the current scope
+   --> src\core\context.rs:250:16
+    |
+250 |         stream.synchronize()?;
+    |                ^^^^^^^^^^^ method not found in `&CudaStream`
+
+error[E0599]: no method named `synchronize` found for struct `CudaStream` in the current scope
+   --> src\core\context.rs:256:28
+    |
+256 |         self.decode_stream.synchronize()?;
+    |                            ^^^^^^^^^^^ method not found in `CudaStream`
+
+error[E0599]: no method named `synchronize` found for struct `CudaStream` in the current scope
+   --> src\core\context.rs:257:32
+    |
+257 |         self.preprocess_stream.synchronize()?;
+    |                                ^^^^^^^^^^^ method not found in `CudaStream`
+
+error[E0599]: no method named `synchronize` found for struct `CudaStream` in the current scope
+   --> src\core\context.rs:258:31
+    |
+258 |         self.inference_stream.synchronize()?;
+    |                               ^^^^^^^^^^^ method not found in `CudaStream`
+
+error[E0599]: no associated item named `InvalidKernel` found for struct `DriverError` in the current scope
+   --> src\core\kernels.rs:293:79
+    |
+293 |                 .ok_or_else(|| EngineError::Cuda(cudarc::driver::DriverError::InvalidKernel))
+    |                                                                               ^^^^^^^^^^^^^ associated item not found in `DriverError`
+
+error[E0599]: no method named `device_ptr` found for struct `Arc<CudaSlice<u8>>` in the current scope
+   --> src\core\types.rs:157:20
+    |
+157 |         *self.data.device_ptr() as u64
+    |                    ^^^^^^^^^^
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `DevicePtr` which provides `device_ptr` is implemented but not in scope; perhaps you want to import it
+    |
+ 25 + use cudarc::driver::DevicePtr;
+    |
+help: there is a method `device` with a similar name
+    |
+157 -         *self.data.device_ptr() as u64
+157 +         *self.data.device() as u64
+    |
+
+warning: unused import: `DeviceSlice`
+  --> src\codecs\nvdec.rs:46:33
+   |
+46 | use cudarc::driver::{DevicePtr, DeviceSlice, LaunchAsync, LaunchConfig};
+   |                                 ^^^^^^^^^^^
+
+warning: unused variable: `slot`
+   --> src\backends\tensorrt.rs:365:13
+    |
+365 |         for slot in &self.slots {
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_slot`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `block`
+   --> src\core\kernels.rs:349:22
+    |
+349 |         let (config, block) = launch_config_2d(input.width, input.height);
+    |                      ^^^^^ help: if this is intentional, prefix it with an underscore: `_block`
+
+warning: unused variable: `kernels`
+   --> src\engine\pipeline.rs:867:5
+    |
+867 |     kernels: &PreprocessKernels,
+    |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_kernels`
+
+warning: unused variable: `kernels`
+   --> src\engine\pipeline.rs:966:5
+    |
+966 |     kernels: &PreprocessKernels,
+    |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_kernels`
+
+warning: unused variable: `pts`
+  --> src\io\file_sink.rs:52:45
+   |
+52 |     fn write_packet(&mut self, data: &[u8], pts: i64, is_keyframe: bool) -> Result<()> {
+   |                                             ^^^ help: if this is intentional, prefix it with an underscore: `_pts`
+
+warning: unused variable: `is_keyframe`
+  --> src\io\file_sink.rs:52:55
+   |
+52 |     fn write_packet(&mut self, data: &[u8], pts: i64, is_keyframe: bool) -> Result<()> {
+   |                                                       ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_is_keyframe`
+
+warning: unused variable: `binding`
+ --> src\probe_ort.rs:4:14
+  |
+4 | pub fn probe(binding: &mut ort::io_binding::IoBinding, mem: &ort::memory::MemoryInfo) {
+  |              ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_binding`
+
+warning: unused variable: `mem`
+ --> src\probe_ort.rs:4:56
+  |
+4 | pub fn probe(binding: &mut ort::io_binding::IoBinding, mem: &ort::memory::MemoryInfo) {
+  |                                                        ^^^ help: if this is intentional, prefix it with an underscore: `_mem`
+
+warning: unused variable: `api`
+ --> src\probe_ort.rs:8:9
+  |
+8 |     let api = ort::api();
+  |         ^^^ help: if this is intentional, prefix it with an underscore: `_api`
+
+Some errors have detailed explanations: E0382, E0599, E0614.
+For more information about an error, try `rustc --explain E0382`.
+warning: `videoforge-engine` (lib) generated 23 warnings
+warning: videoforge-engine@2.0.0: MISSING SDK: nvcuvid.lib not found in C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\lib\x64. Did you copy it from the Video Codec SDK?
+warning: videoforge-engine@2.0.0: MISSING SDK: nvencodeapi.lib not found in C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\lib\x64. Did you copy it from the Video Codec SDK?
+error: could not compile `videoforge-engine` (lib) due to 8 previous errors; 23 warnings emitted
