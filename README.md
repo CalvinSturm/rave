@@ -55,14 +55,22 @@ target/debug/rave benchmark --input in.mp4 --model model.onnx --skip-encode --pr
 target/debug/rave devices --json
 ```
 
-Structured JSON contract:
-- `--json` writes exactly one final JSON object to stdout.
-- JSON payloads include `"schema_version": 1`.
+CLI stdout/stderr + JSON contract (single source of truth):
+- `stdout`:
+  - default mode (no `--json`): human-readable command summary only
+  - `--json` mode: exactly one final JSON object only
+- `stderr`:
+  - progress stream only when `--progress human|jsonl` or `--jsonl` is set
+  - warnings/logging/errors (never mixed into `stdout` JSON mode output)
+- Every CLI JSON object includes `"schema_version": 1` in current releases.
 - Success payloads include `"ok": true`; failures include `"ok": false` and `"error": "<message>"`.
-- Progress records never go to stdout; they go to stderr only when `--progress human|jsonl` or `--jsonl` is set.
+- Stability promise for parsers:
+  - within a fixed `schema_version`, existing field names/types and channel placement (`stdout` final payload, `stderr` progress) remain stable
+  - additive fields may be introduced
+  - breaking schema or channel-routing changes require incrementing `schema_version`
 
-Progress stream contract (`--progress jsonl` or `--jsonl`):
-- Stream: `stderr` only (stdout remains the final human summary or `--json` payload).
+Progress JSONL contract (`--progress jsonl` or `--jsonl`):
+- Stream: `stderr` only (stdout remains human summary or final `--json` payload).
 - Cadence: at most 1 line/sec while frame counters change, plus one final line with `final=true`.
 - Units: `elapsed_ms` is wall-clock milliseconds; frame counters are cumulative counts.
 - Schema:

@@ -47,3 +47,14 @@ Scope guardrails:
 - Add `schema_version` to all CLI JSON payloads and progress JSONL.
 - Add parser-focused tests for `probe --json` / `devices --json`.
 - Document schema/version expectations in README.
+
+## Phase 11 Closeout (PR11-6)
+
+Status: Completed on 2026-02-18 (docs + release hygiene only).
+
+PR slice links:
+- PR11-1: https://github.com/CalvinSturm/rave/tree/phase11-cli-pr1-help-json (head: https://github.com/CalvinSturm/rave/commit/6fcb9fa)
+- PR11-2: https://github.com/CalvinSturm/rave/tree/phase11-cli-pr2-devices-probe (head: https://github.com/CalvinSturm/rave/commit/4bfdda5)
+- PR11-3: https://github.com/CalvinSturm/rave/tree/phase11-cli-pr3-progress-ux (head: https://github.com/CalvinSturm/rave/commit/f22fd52)
+- PR11-4: https://github.com/CalvinSturm/rave/tree/phase11-cli-pr4-consistency-sweep (head: https://github.com/CalvinSturm/rave/commit/693d339)
+- PR11-5: https://github.com/CalvinSturm/rave/tree/phase11-cli-pr5-json-schema-contract (head: https://github.com/CalvinSturm/rave/commit/44cf2d0)
