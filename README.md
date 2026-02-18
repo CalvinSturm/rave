@@ -48,6 +48,9 @@ target/debug/rave benchmark --input in.mp4 --model model.onnx --skip-encode
 # Structured benchmark JSON on stdout (+ file output)
 target/debug/rave benchmark --input in.mp4 --model model.onnx --skip-encode --json --json-out /tmp/bench.json
 
+# Progress (auto prints in TTY; explicit JSONL progress to stderr)
+target/debug/rave benchmark --input in.mp4 --model model.onnx --skip-encode --progress jsonl
+
 # Device inventory
 target/debug/rave devices --json
 ```

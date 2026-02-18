@@ -67,6 +67,14 @@ fn benchmark_help_lists_skip_encode_and_json_out() {
         stdout.contains("--json"),
         "missing --json in benchmark help"
     );
+    assert!(
+        stdout.contains("--progress"),
+        "missing --progress in benchmark help"
+    );
+    assert!(
+        stdout.contains("--jsonl"),
+        "missing --jsonl in benchmark help"
+    );
 }
 
 #[test]
@@ -137,6 +145,30 @@ fn upscale_dry_run_accepts_subcommand_args() {
     assert!(
         stdout.contains("dry-run: command=upscale"),
         "unexpected dry-run output: {stdout}"
+    );
+}
+
+#[test]
+fn upscale_help_lists_progress_and_jsonl() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rave"))
+        .args(["upscale", "--help"])
+        .output()
+        .expect("run rave upscale --help");
+
+    assert!(
+        output.status.success(),
+        "upscale --help failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--progress"),
+        "missing --progress in upscale help"
+    );
+    assert!(
+        stdout.contains("--jsonl"),
+        "missing --jsonl in upscale help"
     );
 }
 
@@ -214,6 +246,41 @@ fn benchmark_dry_run_without_json_is_human_readable() {
     assert!(
         output.status.success(),
         "benchmark dry-run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("benchmark: "),
+        "expected human-readable benchmark summary, got: {stdout}"
+    );
+}
+
+#[test]
+fn benchmark_dry_run_accepts_jsonl_progress_flag() {
+    let dir = unique_temp_dir("benchmark_jsonl_progress");
+    let input = dir.join("input.265");
+    let model = dir.join("model.onnx");
+    write_dummy_file(&input);
+    write_dummy_file(&model);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rave"))
+        .args([
+            "benchmark",
+            "--input",
+            input.to_str().expect("utf8 input"),
+            "--model",
+            model.to_str().expect("utf8 model"),
+            "--progress",
+            "jsonl",
+            "--dry-run",
+        ])
+        .output()
+        .expect("run rave benchmark --progress jsonl --dry-run");
+
+    assert!(
+        output.status.success(),
+        "benchmark dry-run with progress flag failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 

@@ -3,6 +3,7 @@
 //! ```bash
 //! rave upscale --input input.mp4 --output output.mp4 --model model.onnx
 //! rave benchmark --input input.mp4 --model model.onnx --json --json-out bench.json
+//! rave benchmark --input input.mp4 --model model.onnx --progress jsonl
 //! rave devices --json
 //! rave probe
 //! ```
@@ -10,8 +11,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{io::IsTerminal, sync::atomic::Ordering};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use rave_core::backend::UpscaleBackend;
 use rave_core::codec_traits::{BitstreamSink, BitstreamSource, FrameEncoder};
@@ -45,7 +47,7 @@ use std::time::UNIX_EPOCH;
     version,
     about = "GPU-native video engine",
     arg_required_else_help = true,
-    after_help = "Examples:\n  rave probe --json\n  rave upscale --input in.mp4 --output out.mp4 --model model.onnx\n  rave benchmark --input in.mp4 --model model.onnx --skip-encode --json\n  rave benchmark --input in.mp4 --model model.onnx --skip-encode --json-out /tmp/bench.json"
+    after_help = "Examples:\n  rave probe --json\n  rave upscale --input in.mp4 --output out.mp4 --model model.onnx\n  rave benchmark --input in.mp4 --model model.onnx --skip-encode --json\n  rave benchmark --input in.mp4 --model model.onnx --skip-encode --json-out /tmp/bench.json\n  rave benchmark --input in.mp4 --model model.onnx --skip-encode --progress jsonl"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -139,6 +141,14 @@ struct UpscaleArgs {
     /// Emit structured JSON output to stdout.
     #[arg(long = "json", default_value_t = false)]
     json: bool,
+
+    /// Progress output mode: auto (TTY only), off, human, jsonl.
+    #[arg(long = "progress", value_enum, default_value_t = ProgressArg::Auto)]
+    progress: ProgressArg,
+
+    /// Emit progress as JSONL records to stderr.
+    #[arg(long = "jsonl", default_value_t = false)]
+    jsonl: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -173,6 +183,14 @@ struct BenchmarkArgs {
     /// Parse/resolve inputs only, emit synthetic benchmark summary.
     #[arg(long = "dry-run", default_value_t = false)]
     dry_run: bool,
+
+    /// Progress output mode: auto (TTY only), off, human, jsonl.
+    #[arg(long = "progress", value_enum, default_value_t = ProgressArg::Auto)]
+    progress: ProgressArg,
+
+    /// Emit progress as JSONL records to stderr.
+    #[arg(long = "jsonl", default_value_t = false)]
+    jsonl: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -195,6 +213,21 @@ struct DevicesArgs {
     /// Emit JSON device listing.
     #[arg(long = "json", default_value_t = false)]
     json: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ProgressArg {
+    Auto,
+    Off,
+    Human,
+    Jsonl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressMode {
+    Off,
+    Human,
+    Jsonl,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -320,6 +353,25 @@ impl FrameEncoder for SkipEncoder {
     fn flush(&mut self) -> Result<()> {
         Ok(())
     }
+}
+
+struct ProgressReporter {
+    notify: Arc<tokio::sync::Notify>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl ProgressReporter {
+    async fn stop(self) {
+        self.notify.notify_waiters();
+        let _ = self.handle.await;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProgressSnapshot {
+    decoded: u64,
+    inferred: u64,
+    encoded: u64,
 }
 
 // Known container extensions.
@@ -773,8 +825,14 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
             enable_profiler: true,
         },
     );
+    let progress_mode = resolve_progress_mode(args.progress, args.jsonl);
+    let metrics = pipeline.metrics();
+    let progress = spawn_progress_reporter("upscale", metrics, progress_mode);
 
     let run_result = pipeline.run(decoder, setup.backend.clone(), encoder).await;
+    if let Some(progress) = progress {
+        progress.stop().await;
+    }
     let shutdown_result = setup.backend.shutdown().await;
     run_result?;
     shutdown_result?;
@@ -855,13 +913,14 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
         }
         Err(err) => return Err(err),
     };
+    let progress_mode = resolve_progress_mode(args.progress, args.jsonl);
     let mut mode = if args.skip_encode {
         BenchmarkEncodeMode::Skipped
     } else {
         BenchmarkEncodeMode::Nvenc
     };
 
-    let first_result = run_benchmark_once(&setup, &args, mode).await;
+    let first_result = run_benchmark_once(&setup, &args, mode, progress_mode).await;
     let result = match first_result {
         Ok(summary) => Ok(summary),
         Err(err) if matches!(mode, BenchmarkEncodeMode::Nvenc) && args.allow_encode_skip => {
@@ -871,7 +930,7 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
                     "NVENC failed during benchmark; rerunning with encode skipped"
                 );
                 mode = BenchmarkEncodeMode::Skipped;
-                run_benchmark_once(&setup, &args, mode).await
+                run_benchmark_once(&setup, &args, mode, progress_mode).await
             } else {
                 Err(err)
             }
@@ -891,6 +950,7 @@ async fn run_benchmark_once(
     setup: &RuntimeSetup,
     args: &BenchmarkArgs,
     mode: BenchmarkEncodeMode,
+    progress_mode: ProgressMode,
 ) -> Result<BenchmarkSummary> {
     if matches!(mode, BenchmarkEncodeMode::Skipped) && has_wsl_driver_loader_conflict() {
         tracing::warn!(
@@ -921,6 +981,7 @@ Run with: LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda-12/targets/x86_64-lin
         },
     );
     let metrics = pipeline.metrics();
+    let progress = spawn_progress_reporter("benchmark", metrics.clone(), progress_mode);
 
     let start = Instant::now();
     match mode {
@@ -947,6 +1008,9 @@ Run with: LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda-12/targets/x86_64-lin
         }
     }
     let elapsed = start.elapsed();
+    if let Some(progress) = progress {
+        progress.stop().await;
+    }
 
     Ok(make_benchmark_summary(
         &metrics,
@@ -1040,6 +1104,101 @@ fn make_benchmark_summary(
             ))
         },
     }
+}
+
+fn resolve_progress_mode(progress: ProgressArg, jsonl: bool) -> ProgressMode {
+    if jsonl {
+        return ProgressMode::Jsonl;
+    }
+    match progress {
+        ProgressArg::Auto => {
+            if std::io::stderr().is_terminal() {
+                ProgressMode::Human
+            } else {
+                ProgressMode::Off
+            }
+        }
+        ProgressArg::Off => ProgressMode::Off,
+        ProgressArg::Human => ProgressMode::Human,
+        ProgressArg::Jsonl => ProgressMode::Jsonl,
+    }
+}
+
+fn current_progress_snapshot(metrics: &PipelineMetrics) -> ProgressSnapshot {
+    ProgressSnapshot {
+        decoded: metrics.frames_decoded.load(Ordering::Relaxed),
+        inferred: metrics.frames_inferred.load(Ordering::Relaxed),
+        encoded: metrics.frames_encoded.load(Ordering::Relaxed),
+    }
+}
+
+fn emit_progress_line(
+    command: &'static str,
+    mode: ProgressMode,
+    elapsed: Duration,
+    snapshot: ProgressSnapshot,
+    final_line: bool,
+) {
+    match mode {
+        ProgressMode::Off => {}
+        ProgressMode::Human => {
+            eprintln!(
+                "progress: command={} elapsed_s={:.3} decoded={} inferred={} encoded={} final={}",
+                command,
+                elapsed.as_secs_f64(),
+                snapshot.decoded,
+                snapshot.inferred,
+                snapshot.encoded,
+                final_line
+            );
+        }
+        ProgressMode::Jsonl => {
+            eprintln!(
+                "{{\"type\":\"progress\",\"command\":{},\"elapsed_ms\":{},\"frames\":{{\"decoded\":{},\"inferred\":{},\"encoded\":{}}},\"final\":{}}}",
+                json_string(command),
+                elapsed.as_millis(),
+                snapshot.decoded,
+                snapshot.inferred,
+                snapshot.encoded,
+                final_line
+            );
+        }
+    }
+}
+
+fn spawn_progress_reporter(
+    command: &'static str,
+    metrics: Arc<PipelineMetrics>,
+    mode: ProgressMode,
+) -> Option<ProgressReporter> {
+    if matches!(mode, ProgressMode::Off) {
+        return None;
+    }
+
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let notify_task = notify.clone();
+    let handle = tokio::spawn(async move {
+        let start = Instant::now();
+        let mut last = current_progress_snapshot(&metrics);
+        loop {
+            tokio::select! {
+                _ = notify_task.notified() => {
+                    let snapshot = current_progress_snapshot(&metrics);
+                    emit_progress_line(command, mode, start.elapsed(), snapshot, true);
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                    let snapshot = current_progress_snapshot(&metrics);
+                    if snapshot != last {
+                        emit_progress_line(command, mode, start.elapsed(), snapshot, false);
+                        last = snapshot;
+                    }
+                }
+            }
+        }
+    });
+
+    Some(ProgressReporter { notify, handle })
 }
 
 fn avg_us(total_us: u64, count: u64) -> f64 {
