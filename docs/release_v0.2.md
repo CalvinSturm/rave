@@ -47,6 +47,11 @@ Use `--locked` and publish in dependency order:
 
 ## Notes
 - `legacy/engine-v2` is excluded from workspace release flow.
+- Downstream `cargo publish --dry-run` may fail before `rave-core v0.2.0` is live on crates.io because index resolution cannot find the new dependency version yet.
+- For pre-publish package inspection before `rave-core` is published, use:
+  - `cargo publish -p <crate> --dry-run --no-verify`
+  - `cargo package -p <crate> --no-verify`
+- Full dependent-crate dry-run verification works only after `rave-core v0.2.0` is actually published.
 - Recommended pre-publish checks:
   - `cargo fmt --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
