@@ -611,12 +611,15 @@ fn should_emit_wsl_skip_encode_benchmark_json(err: &EngineError) -> bool {
 }
 
 fn init_tracing() {
+    let ansi_enabled = std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(false)
+        .with_writer(std::io::stderr)
+        .with_ansi(ansi_enabled)
         .init();
 }
 
@@ -1332,7 +1335,7 @@ fn enumerate_cuda_devices() -> Result<(i32, Vec<CudaDeviceInfo>)> {
     let rc_init = unsafe { cuInit(0) };
     if rc_init != CUDA_SUCCESS {
         return Err(EngineError::Pipeline(format!(
-            "cuInit failed with rc={rc_init}; run `scripts/run_cuda_probe.sh` for diagnostics"
+            "cuInit failed with rc={rc_init}; run scripts/run_cuda_probe.sh for diagnostics"
         )));
     }
 

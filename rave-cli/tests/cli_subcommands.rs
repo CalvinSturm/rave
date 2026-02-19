@@ -127,6 +127,12 @@ fn probe_json_emits_schema_and_command_fields() {
         .output()
         .expect("run rave probe --json");
 
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("\u{1b}["),
+        "stderr should not include ANSI escapes when not a TTY: {stderr}"
+    );
+
     let value: serde_json::Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|e| panic!("probe --json stdout is not JSON: {e}"));
     assert_schema_version(&value);
