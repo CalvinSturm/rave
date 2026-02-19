@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "RAVE pipeline orchestration — decode→preprocess→infer→encode."
+readme = "../../README.md"
 
 [features]
 default = []

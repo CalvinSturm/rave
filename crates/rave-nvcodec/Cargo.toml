@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "RAVE NVDEC/NVENC hardware codec wrappers."
+readme = "../../README.md"
 build = "build.rs"
 
 [dependencies]

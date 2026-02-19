@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "RAVE CUDA kernels, timers, and stream helpers."
+readme = "../../README.md"
 
 [dependencies]
 rave-core = { workspace = true }

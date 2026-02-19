@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-19
+
+### Changed
+- Workspace release hygiene pass finalized for `v0.2.0` (version alignment + publish metadata readiness).
+
 ### Changed
 - Phase 11 PR11-6 closeout documentation and release hygiene updates:
   - checklist completion note with PR slice links
