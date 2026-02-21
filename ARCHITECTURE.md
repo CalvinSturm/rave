@@ -64,6 +64,17 @@ for a future DAG scheduler without breaking the public contract.
 Container bytes are not the determinism boundary; canonical stage checkpoint
 hashes are used for repeat-run comparison when enabled.
 
+## Validate fixture runtime
+
+`rave validate --fixture tests/fixtures/validate_production_strict.json` is
+designed to run end-to-end on GPU runners without manual model inputs.
+
+Model resolution order for this fixture:
+1. `RAVE_VALIDATE_MODEL` (explicit override)
+2. committed fallback `tests/assets/models/resize2x_rgb.onnx`
+
+This keeps CI deterministic while preserving local override flexibility.
+
 ## Pipeline overview
 
 VideoForge runs four concurrent stages connected by bounded async channels. Frame data stays in GPU device memory from decode to encode — no `cudaMemcpy` in steady-state operation.

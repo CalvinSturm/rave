@@ -106,10 +106,23 @@ target/debug/rave devices --json
 # Best-effort runtime validation harness
 target/debug/rave validate --json --best-effort
 
-# Fixture-driven validation scenario (GPU runner uses RAVE_VALIDATE_MODEL)
+# Fixture-driven validation scenario (self-contained default model)
 target/debug/rave validate --json --best-effort --profile production_strict \
   --fixture tests/fixtures/validate_production_strict.json
+
+# Optional model override
+RAVE_VALIDATE_MODEL=/abs/path/custom_model.onnx \
+  target/debug/rave validate --json --best-effort --profile production_strict \
+  --fixture tests/fixtures/validate_production_strict.json
 ```
+
+`validate --fixture tests/fixtures/validate_production_strict.json` resolves the
+model in this order:
+1. `RAVE_VALIDATE_MODEL` (if set)
+2. committed fallback `tests/assets/models/resize2x_rgb.onnx`
+
+Validate JSON output now includes `"model_path"` so runs are transparent even
+when best-effort mode skips due missing runtime dependencies.
 
 CLI stdout/stderr + JSON contract (single source of truth):
 - `stdout`:

@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       model_path:
-        description: "Absolute path to ONNX model on the GPU runner"
-        required: true
+        description: "Optional ONNX model path override (defaults to committed test model)"
+        required: false
+        default: ""
         type: string
 
 jobs:
@@ -13,7 +14,7 @@ jobs:
     runs-on: [self-hosted, gpu]
     env:
       RAVE_CI_GPU: "1"
-      RAVE_VALIDATE_MODEL: ${{ inputs.model_path }}
+      RAVE_VALIDATE_MODEL: ${{ inputs.model_path != '' && inputs.model_path || 'tests/assets/models/resize2x_rgb.onnx' }}
     steps:
       - uses: actions/checkout@v4
 
