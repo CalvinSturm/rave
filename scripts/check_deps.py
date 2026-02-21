@@ -31,14 +31,8 @@ ALLOWED_EDGES: Dict[str, Set[str]] = {
         "rave-nvcodec",
         "rave-ffmpeg",
     },
-    # Prefer composition through rave-pipeline, but direct edges are tolerated
-    # until CLI wiring has been fully consolidated.
     "rave-cli": {
         "rave-core",
-        "rave-cuda",
-        "rave-tensorrt",
-        "rave-nvcodec",
-        "rave-ffmpeg",
         "rave-pipeline",
     },
 }
@@ -57,7 +51,7 @@ def fix_hint(source: str, _target: str) -> str:
     return "remove the edge or move integration into rave-pipeline."
 
 
-def evaluate(packages: Sequence[dict]) -> Tuple[List[Tuple[str, str, str]], List[str]]:
+def evaluate(packages: Sequence[dict]) -> List[Tuple[str, str, str]]:
     edges: Dict[str, Set[str]] = {}
     for package in packages:
         source = package.get("name", "")
@@ -73,25 +67,12 @@ def evaluate(packages: Sequence[dict]) -> Tuple[List[Tuple[str, str, str]], List
         edges[source] = dependencies
 
     violations: List[Tuple[str, str, str]] = []
-    warnings: List[str] = []
-
     for source in sorted(edges):
         allowed = ALLOWED_EDGES.get(source, set())
         for target in sorted(edges[source]):
             if target not in allowed:
                 violations.append((source, target, fix_hint(source, target)))
-
-        if source == "rave-cli":
-            for target in sorted(edges[source]):
-                if target in {"rave-core", "rave-pipeline"}:
-                    continue
-                warnings.append(
-                    "Direct CLI dependency "
-                    f"`{source} -> {target}` should usually be routed through "
-                    "`rave-pipeline`."
-                )
-
-    return violations, warnings
+    return violations
 
 
 def run_self_test() -> None:
@@ -105,7 +86,7 @@ def run_self_test() -> None:
             "dependencies": [{"name": "rave-core"}, {"name": "rave-nvcodec"}],
         },
     ]
-    violations, _warnings = evaluate(invalid_graph)
+    violations = evaluate(invalid_graph)
     if len(violations) != 1:
         raise SystemExit("depcheck self-test failed: expected one forbidden edge")
 
@@ -130,10 +111,7 @@ def main(argv: Sequence[str]) -> int:
 
     metadata = json.loads(raw)
     packages = metadata.get("packages", [])
-    violations, warnings = evaluate(packages)
-
-    for warning in warnings:
-        print(f"warning: {warning}", file=sys.stderr)
+    violations = evaluate(packages)
 
     if violations:
         for source, target, fix in violations:

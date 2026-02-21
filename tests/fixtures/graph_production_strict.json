@@ -1,0 +1,35 @@
+{
+  "graph_schema_version": 1,
+  "stages": [
+    {
+      "kind": "face_blur",
+      "id": 1,
+      "config": {
+        "sigma": 1.2,
+        "iterations": 1,
+        "mode": "whole_frame_gaussian",
+        "regions": [
+          {
+            "x": 16,
+            "y": 12,
+            "width": 64,
+            "height": 40
+          }
+        ]
+      }
+    },
+    {
+      "kind": "enhance",
+      "id": 2,
+      "config": {
+        "model_path": "MODEL_PATH_FROM_FIXTURE_ENV.onnx",
+        "precision_policy": "fp16",
+        "batch_config": {
+          "max_batch": 1,
+          "latency_deadline_us": 8000
+        },
+        "scale": 2
+      }
+    }
+  ]
+}

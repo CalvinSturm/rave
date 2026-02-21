@@ -1,0 +1,9 @@
+{
+  "input": "../assets/golden_small.mp4",
+  "graph": "graph_production_strict.json",
+  "model_env": "RAVE_VALIDATE_MODEL",
+  "profile": "production_strict",
+  "determinism_runs": 2,
+  "determinism_samples": 4,
+  "allow_hash_skipped": true
+}

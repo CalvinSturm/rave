@@ -27,4 +27,4 @@ jobs:
         run: cargo test --workspace
 
       - name: Validate Harness (Best Effort)
-        run: cargo run -p rave-cli --bin rave -- validate --json --best-effort
+        run: cargo run -p rave-cli --bin rave -- validate --json --best-effort --profile production_strict --fixture tests/fixtures/validate_production_strict.json

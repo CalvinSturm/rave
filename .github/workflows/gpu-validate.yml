@@ -1,0 +1,24 @@
+name: GPU Validate
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_path:
+        description: "Absolute path to ONNX model on the GPU runner"
+        required: true
+        type: string
+
+jobs:
+  validate-gpu:
+    runs-on: [self-hosted, gpu]
+    env:
+      RAVE_CI_GPU: "1"
+      RAVE_VALIDATE_MODEL: ${{ inputs.model_path }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate Fixture (GPU Required)
+        run: cargo run -p rave-cli --bin rave -- validate --json --profile production_strict --fixture tests/fixtures/validate_production_strict.json

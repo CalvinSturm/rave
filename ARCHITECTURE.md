@@ -43,6 +43,8 @@ No-host-copies checklist:
 - `ProfilePreset` (`Dev`, `ProductionStrict`, `Benchmark`)
 - `RunContract` (determinism + audit policy)
 - `UpscalePipeline::run_graph(input, output, graph, profile, contract)`
+- Graph schema contract: top-level `graph_schema_version` is required and must
+  equal `1` for current builds.
 
 v1 constraints:
 - at least one stage
@@ -56,7 +58,7 @@ for a future DAG scheduler without breaking the public contract.
 
 `ProfilePreset::ProductionStrict` is the first production profile and enforces:
 - strict no-host-copies mode (`PipelineConfig.strict_no_host_copies=true`)
-- hard-fail audit handling (warnings can be promoted to failures by contract)
+- hard-fail on unsupported/stub stage warnings (for example `FaceSwapAndEnhance`)
 - deterministic output contract checks at canonical stage boundaries
 
 Container bytes are not the determinism boundary; canonical stage checkpoint

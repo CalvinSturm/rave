@@ -39,7 +39,7 @@ rave-tensorrt  -> rave-core (optionally rave-cuda utilities)
 rave-nvcodec   -> rave-core (optionally rave-cuda utilities)
 rave-ffmpeg    -> rave-core
 rave-pipeline  -> rave-core, rave-cuda, rave-tensorrt, rave-nvcodec, rave-ffmpeg
-rave-cli       -> rave-core, rave-pipeline (direct low-level deps are discouraged)
+rave-cli       -> rave-core, rave-pipeline
 ```
 
 Why these boundaries exist:
@@ -64,6 +64,8 @@ Stage graph integration API:
   `RunContract`, and `UpscalePipeline::run_graph(...)`.
 - `ProfilePreset::ProductionStrict` enables strict no-host-copies policy and
   deterministic contract checks (via optional checkpoint hooks).
+- Graph specs are schema-versioned and must include
+  `"graph_schema_version": 1` at the top level.
 
 ## Build
 
@@ -103,6 +105,10 @@ target/debug/rave devices --json
 
 # Best-effort runtime validation harness
 target/debug/rave validate --json --best-effort
+
+# Fixture-driven validation scenario (GPU runner uses RAVE_VALIDATE_MODEL)
+target/debug/rave validate --json --best-effort --profile production_strict \
+  --fixture tests/fixtures/validate_production_strict.json
 ```
 
 CLI stdout/stderr + JSON contract (single source of truth):
