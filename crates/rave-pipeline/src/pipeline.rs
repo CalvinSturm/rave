@@ -50,19 +50,36 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use std::{path::Path, sync::Mutex};
 
+use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
 use rave_core::backend::UpscaleBackend;
+use rave_core::codec_traits::{
+    BitstreamSink, BitstreamSource, DecodedFrame, FrameDecoder, FrameEncoder,
+};
 use rave_core::context::{GpuContext, PerfStage};
 use rave_core::error::{EngineError, Result};
+use rave_core::ffi_types::cudaVideoCodec;
 use rave_core::types::{FrameEnvelope, GpuTexture, PixelFormat};
 use rave_cuda::kernels::{ModelPrecision, PreprocessKernels};
+use rave_ffmpeg::ffmpeg_demuxer::FfmpegDemuxer;
+use rave_ffmpeg::ffmpeg_muxer::FfmpegMuxer;
+use rave_ffmpeg::file_sink::FileBitstreamSink;
+use rave_ffmpeg::file_source::FileBitstreamSource;
+use rave_ffmpeg::probe_container;
+use rave_nvcodec::nvdec::NvDecoder;
+use rave_nvcodec::nvenc::{NvEncConfig, NvEncoder};
+use rave_tensorrt::tensorrt::TensorRtBackend;
 
-use rave_core::codec_traits::{DecodedFrame, FrameDecoder, FrameEncoder};
+use crate::stage_graph::{
+    AuditCheck, AuditStatus, PipelineReport, ProfilePreset, RunContract, StageConfig, StageGraph,
+    StageKind, StageTimingReport,
+};
 
 // ─── Metrics ────────────────────────────────────────────────────────────────
 
@@ -414,6 +431,195 @@ impl UpscalePipeline {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    /// Run a fixed, validated stage graph on container/bitstream paths.
+    ///
+    /// This is the stable integration surface for app-level effect chains.
+    #[instrument(skip_all, name = "upscale_pipeline_graph")]
+    pub async fn run_graph(
+        &self,
+        input: &Path,
+        output: &Path,
+        graph: StageGraph,
+        profile: ProfilePreset,
+        contract: RunContract,
+    ) -> Result<PipelineReport> {
+        graph.validate()?;
+
+        if !input.exists() {
+            return Err(EngineError::Pipeline(format!(
+                "Input file not found: {}",
+                input.display()
+            )));
+        }
+        let enhance_config = graph.single_enhance_config().ok_or_else(|| {
+            EngineError::InvariantViolation(
+                "StageGraph validation failed: missing model for enhance stage".into(),
+            )
+        })?;
+        if !enhance_config.model_path.exists() {
+            return Err(EngineError::Pipeline(format!(
+                "Model file not found: {}",
+                enhance_config.model_path.display()
+            )));
+        }
+
+        #[cfg(not(feature = "audit-no-host-copies"))]
+        if profile.strict_no_host_copies() {
+            return Err(EngineError::InvariantViolation(
+                "ProductionStrict requires crate feature `audit-no-host-copies`".into(),
+            ));
+        }
+
+        if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                EngineError::Pipeline(format!(
+                    "Failed to create output directory {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        let input_cfg = resolve_graph_input(input)?;
+        let out_width = input_cfg.width * enhance_config.scale;
+        let out_height = input_cfg.height * enhance_config.scale;
+        let nv12_pitch = (out_width as usize).div_ceil(256) * 256;
+
+        let mut cfg = self.config.clone();
+        cfg.model_precision = enhance_config.precision_policy.as_model_precision();
+        cfg.strict_no_host_copies = profile.strict_no_host_copies();
+        cfg.encoder_nv12_pitch = nv12_pitch;
+
+        let pipeline = UpscalePipeline::new(self.ctx.clone(), self.kernels.clone(), cfg.clone());
+        let metrics = pipeline.metrics();
+
+        let source: Box<dyn BitstreamSource> = if input_cfg.input_is_container {
+            Box::new(FfmpegDemuxer::new(input, input_cfg.codec)?)
+        } else {
+            Box::new(FileBitstreamSource::new(input.to_path_buf())?)
+        };
+        let decoder = NvDecoder::new(self.ctx.clone(), source, input_cfg.codec)?;
+
+        let sink: Box<dyn BitstreamSink> = if is_container_path(output) {
+            Box::new(FfmpegMuxer::new(
+                output,
+                out_width,
+                out_height,
+                input_cfg.fps_num,
+                input_cfg.fps_den,
+            )?)
+        } else {
+            Box::new(FileBitstreamSink::new(output.to_path_buf())?)
+        };
+        let enc_config = NvEncConfig {
+            width: out_width,
+            height: out_height,
+            fps_num: input_cfg.fps_num,
+            fps_den: input_cfg.fps_den,
+            bitrate: 0,
+            max_bitrate: 0,
+            gop_length: 250,
+            b_frames: 0,
+            nv12_pitch: nv12_pitch as u32,
+        };
+        let cuda_ctx_raw: *mut std::ffi::c_void =
+            *self.ctx.device().cu_primary_ctx() as *mut std::ffi::c_void;
+        let encoder = NvEncoder::new(cuda_ctx_raw, sink, enc_config)?;
+
+        let trt = Arc::new(TensorRtBackend::with_precision(
+            enhance_config.model_path.clone(),
+            self.ctx.clone(),
+            contract.requested_device as i32,
+            cfg.upscaled_capacity + 2,
+            cfg.upscaled_capacity,
+            enhance_config.precision_policy.as_tensorrt_precision(),
+            enhance_config.batch_config.to_tensorrt(),
+        ));
+        let graph_backend = Arc::new(GraphBackend::new(
+            trt.clone(),
+            graph.clone(),
+            self.ctx.clone(),
+            contract.clone(),
+        ));
+        graph_backend.initialize().await?;
+
+        let run_result = pipeline.run(decoder, graph_backend.clone(), encoder).await;
+        let shutdown_result = graph_backend.shutdown().await;
+        run_result?;
+        shutdown_result?;
+
+        let model_meta = graph_backend.metadata()?;
+        let (vram_current, vram_peak) = self.ctx.vram_usage();
+        let stage_timing = StageTimingReport {
+            decode_us: metrics.decode_total_us.load(Ordering::Relaxed),
+            preprocess_us: metrics.preprocess_total_us.load(Ordering::Relaxed),
+            infer_us: metrics.inference_total_us.load(Ordering::Relaxed),
+            postprocess_us: metrics.postprocess_total_us.load(Ordering::Relaxed),
+            encode_us: metrics.encode_total_us.load(Ordering::Relaxed),
+        };
+
+        let mut audit = graph_backend.audit_checks();
+        if profile.strict_no_host_copies() {
+            audit.push(AuditCheck {
+                name: "strict_no_host_copies".into(),
+                status: AuditStatus::Pass,
+                detail: "strict no-host-copies mode enabled".into(),
+            });
+        }
+
+        let stage_checksums = graph_backend.take_stage_hashes();
+        if contract.deterministic_output && contract.determinism_hash_frames > 0 {
+            if stage_checksums.is_empty() {
+                audit.push(AuditCheck {
+                    name: "determinism_checkpoint".into(),
+                    status: AuditStatus::Warn,
+                    detail: "determinism hash requested but no hashes were produced".into(),
+                });
+            } else {
+                audit.push(AuditCheck {
+                    name: "determinism_checkpoint".into(),
+                    status: AuditStatus::Pass,
+                    detail: format!("captured {} stage checksum(s)", stage_checksums.len()),
+                });
+            }
+        }
+
+        if audit
+            .iter()
+            .any(|check| matches!(check.status, AuditStatus::Fail))
+        {
+            return Err(EngineError::InvariantViolation(format!(
+                "Graph run failed audits: {}",
+                audit_failures(&audit)
+            )));
+        }
+        if contract.fail_on_audit_warn
+            && audit
+                .iter()
+                .any(|check| matches!(check.status, AuditStatus::Warn))
+        {
+            return Err(EngineError::InvariantViolation(format!(
+                "Graph run has audit warnings: {}",
+                audit_failures(&audit)
+            )));
+        }
+
+        Ok(PipelineReport {
+            selected_device: contract.requested_device,
+            provider: trt.selected_provider().unwrap_or("unknown").to_string(),
+            model_name: model_meta.name.clone(),
+            model_scale: model_meta.scale,
+            output_width: out_width,
+            output_height: out_height,
+            frames_decoded: metrics.frames_decoded.load(Ordering::Relaxed),
+            frames_encoded: metrics.frames_encoded.load(Ordering::Relaxed),
+            stage_timing,
+            stage_checksums,
+            vram_current_bytes: vram_current,
+            vram_peak_bytes: vram_peak,
+            audit,
+        })
     }
 
     /// Synthetic stress test — validates engine mechanics without real codecs.
@@ -813,6 +1019,224 @@ impl AuditSuite {
 
         info!("═══ AUDIT SUITE: ALL INVARIANTS VERIFIED ═══");
         Ok(report)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  STAGE GRAPH BACKEND
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Copy)]
+struct GraphInputConfig {
+    codec: cudaVideoCodec,
+    width: u32,
+    height: u32,
+    fps_num: u32,
+    fps_den: u32,
+    input_is_container: bool,
+}
+
+fn is_container_path(path: &Path) -> bool {
+    const CONTAINER_EXTENSIONS: &[&str] = &["mp4", "mkv", "mov", "avi", "webm", "ts", "flv"];
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| CONTAINER_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+fn resolve_graph_input(path: &Path) -> Result<GraphInputConfig> {
+    if is_container_path(path) {
+        let meta = probe_container(path)?;
+        return Ok(GraphInputConfig {
+            codec: meta.codec,
+            width: meta.width,
+            height: meta.height,
+            fps_num: meta.fps_num,
+            fps_den: meta.fps_den,
+            input_is_container: true,
+        });
+    }
+
+    Ok(GraphInputConfig {
+        codec: cudaVideoCodec::HEVC,
+        width: 1920,
+        height: 1080,
+        fps_num: 30,
+        fps_den: 1,
+        input_is_container: false,
+    })
+}
+
+fn audit_failures(audit: &[AuditCheck]) -> String {
+    audit
+        .iter()
+        .filter(|check| !matches!(check.status, AuditStatus::Pass))
+        .map(|check| format!("{}={}", check.name, check.detail))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+#[derive(Default)]
+struct GraphBackendState {
+    hashed_frames: usize,
+    stage_hashes: Vec<String>,
+    audit: Vec<AuditCheck>,
+    warned_blur_stub: bool,
+    warned_swap_stub: bool,
+    warned_hash_feature: bool,
+}
+
+struct GraphBackend {
+    trt: Arc<TensorRtBackend>,
+    graph: StageGraph,
+    #[cfg(feature = "debug-host-copies")]
+    ctx: Arc<GpuContext>,
+    contract: RunContract,
+    state: Mutex<GraphBackendState>,
+}
+
+impl GraphBackend {
+    fn new(
+        trt: Arc<TensorRtBackend>,
+        graph: StageGraph,
+        ctx: Arc<GpuContext>,
+        contract: RunContract,
+    ) -> Self {
+        #[cfg(not(feature = "debug-host-copies"))]
+        let _ = ctx;
+        Self {
+            trt,
+            graph,
+            #[cfg(feature = "debug-host-copies")]
+            ctx,
+            contract,
+            state: Mutex::new(GraphBackendState::default()),
+        }
+    }
+
+    fn push_warn_once(
+        &self,
+        flag: fn(&mut GraphBackendState) -> &mut bool,
+        name: &str,
+        detail: &str,
+    ) {
+        let mut guard = self.state.lock().unwrap();
+        let marked = flag(&mut guard);
+        if !*marked {
+            *marked = true;
+            guard.audit.push(AuditCheck {
+                name: name.to_string(),
+                status: AuditStatus::Warn,
+                detail: detail.to_string(),
+            });
+        }
+    }
+
+    fn maybe_checkpoint_hash(&self, texture: &GpuTexture) {
+        if !self.contract.deterministic_output || self.contract.determinism_hash_frames == 0 {
+            return;
+        }
+
+        {
+            let guard = self.state.lock().unwrap();
+            if guard.hashed_frames >= self.contract.determinism_hash_frames {
+                return;
+            }
+        }
+
+        #[cfg(feature = "debug-host-copies")]
+        {
+            match self.ctx.device().dtoh_sync_copy(&*texture.data) {
+                Ok(bytes) => {
+                    let hash = crate::stage_graph::hash_checkpoint_bytes(&bytes);
+                    let mut guard = self.state.lock().unwrap();
+                    guard.stage_hashes.push(hash);
+                    guard.hashed_frames += 1;
+                }
+                Err(err) => {
+                    self.state.lock().unwrap().audit.push(AuditCheck {
+                        name: "determinism_checkpoint".into(),
+                        status: AuditStatus::Fail,
+                        detail: format!("host readback for determinism hash failed: {err}"),
+                    });
+                }
+            }
+        }
+
+        #[cfg(not(feature = "debug-host-copies"))]
+        let _ = texture;
+
+        #[cfg(not(feature = "debug-host-copies"))]
+        self.push_warn_once(
+            |state| &mut state.warned_hash_feature,
+            "determinism_checkpoint",
+            "determinism hashing requested but feature `debug-host-copies` is disabled",
+        );
+    }
+
+    fn apply_face_blur_stub(&self, _stage_id: u32) {
+        self.push_warn_once(
+            |state| &mut state.warned_blur_stub,
+            "face_blur",
+            "FaceBlur stage is an MVP GPU no-op stub in this release",
+        );
+    }
+
+    fn apply_swap_stub(&self, _stage_id: u32) {
+        self.push_warn_once(
+            |state| &mut state.warned_swap_stub,
+            "face_swap",
+            "FaceSwapAndEnhance stage is an MVP swap no-op stub in this release",
+        );
+    }
+
+    fn audit_checks(&self) -> Vec<AuditCheck> {
+        self.state.lock().unwrap().audit.clone()
+    }
+
+    fn take_stage_hashes(&self) -> Vec<String> {
+        self.state.lock().unwrap().stage_hashes.clone()
+    }
+}
+
+#[async_trait]
+impl UpscaleBackend for GraphBackend {
+    async fn initialize(&self) -> Result<()> {
+        self.trt.initialize().await
+    }
+
+    async fn process(&self, input: GpuTexture) -> Result<GpuTexture> {
+        let mut texture = input;
+        for stage in &self.graph.stages {
+            match stage {
+                StageConfig::Enhance { id, .. } => {
+                    texture = self.trt.process(texture).await.map_err(|err| {
+                        EngineError::Pipeline(format!(
+                            "stage {} {:?} failed: {err}",
+                            id.0,
+                            StageKind::Enhance
+                        ))
+                    })?;
+                }
+                StageConfig::FaceBlur { id, .. } => {
+                    self.apply_face_blur_stub(id.0);
+                }
+                StageConfig::FaceSwapAndEnhance { id, .. } => {
+                    self.apply_swap_stub(id.0);
+                }
+            }
+        }
+
+        self.maybe_checkpoint_hash(&texture);
+        Ok(texture)
+    }
+
+    async fn shutdown(&self) -> Result<()> {
+        self.trt.shutdown().await
+    }
+
+    fn metadata(&self) -> Result<&rave_core::backend::ModelMetadata> {
+        self.trt.metadata()
     }
 }
 

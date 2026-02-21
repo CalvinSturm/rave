@@ -428,6 +428,7 @@ pub struct TensorRtBackend {
     ring_size: usize,
     min_ring_slots: usize,
     meta: OnceLock<ModelMetadata>,
+    selected_provider: OnceLock<String>,
     state: Mutex<Option<InferenceState>>,
     pub inference_metrics: InferenceMetrics,
     /// Phase 8: precision policy for TRT EP.
@@ -528,6 +529,7 @@ impl TensorRtBackend {
             ring_size,
             min_ring_slots,
             meta: OnceLock::new(),
+            selected_provider: OnceLock::new(),
             state: Mutex::new(None),
             inference_metrics: InferenceMetrics::new(),
             precision_policy,
@@ -554,6 +556,11 @@ impl TensorRtBackend {
             .as_ref()
             .and_then(|s| s.ring.as_ref())
             .map(|r| r.metrics.snapshot())
+    }
+
+    /// Active ORT execution provider selected during initialization.
+    pub fn selected_provider(&self) -> Option<&str> {
+        self.selected_provider.get().map(String::as_str)
     }
 
     fn extract_metadata(session: &Session) -> Result<ModelMetadata> {
@@ -1197,6 +1204,7 @@ impl UpscaleBackend for TensorRtBackend {
         );
 
         let _ = self.meta.set(metadata);
+        let _ = self.selected_provider.set(active_provider.to_string());
 
         *guard = Some(InferenceState {
             session,

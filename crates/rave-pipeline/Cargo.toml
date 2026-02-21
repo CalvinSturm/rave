@@ -12,12 +12,18 @@ readme = "README.md"
 default = []
 debug-alloc = ["rave-core/debug-alloc"]
 audit-no-host-copies = ["rave-core/audit-no-host-copies", "rave-tensorrt/audit-no-host-copies"]
+debug-host-copies = []
 
 [dependencies]
 rave-core = { workspace = true }
 rave-cuda = { workspace = true }
 rave-tensorrt = { workspace = true }
+rave-nvcodec = { workspace = true }
+rave-ffmpeg = { workspace = true }
 cudarc = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+async-trait = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
