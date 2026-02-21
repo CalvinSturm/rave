@@ -27,8 +27,10 @@ Bounded channels enforce finite in-flight frame counts and upstream backpressure
 
 - `UpscalePipeline::new(ctx, kernels, config)`
 - `UpscalePipeline::run(decoder, backend, encoder)`
+- `UpscalePipeline::run_graph(input, output, graph, profile, contract)`
 - `PipelineConfig` capacities and model precision controls
 - `PipelineMetrics` frame counters and latency aggregates
+- `StageGraph`, `StageConfig`, `ProfilePreset`, `RunContract`, `PipelineReport`
 
 ## Typical Usage
 
@@ -59,3 +61,4 @@ fn build_pipeline(ctx: Arc<GpuContext>) -> Result<UpscalePipeline> {
 - Optional strict no-host-copies checks are controlled by
   `PipelineConfig::strict_no_host_copies` with crate feature
   `audit-no-host-copies`.
+- Determinism checkpoint hashing is feature-gated behind `debug-host-copies`.

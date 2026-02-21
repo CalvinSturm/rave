@@ -47,8 +47,24 @@ Allowed exceptions:
 - [ ] `PipelineConfig::strict_no_host_copies` is available for strict audit runs.
 - [ ] Audit feature wiring is enabled with `--features audit-no-host-copies` when validating invariants.
 
+## Determinism Contract (`production_strict`)
+
+Definition:
+- Same input + same model + same profile + same device should produce the same
+  canonical stage output bytes.
+- Container bytes may differ (timestamps/metadata), so determinism is audited
+  at canonical stage checkpoints rather than container payload hashes.
+
+Checkpoint policy:
+- Checkpoint hashing is optional and controlled by `RunContract`.
+- Host readback for checkpoint hashing is only allowed behind
+  `feature = \"debug-host-copies\"`.
+- In strict mode, requested checkpoint hashing without that feature is reported
+  as an audit warning/failure according to contract policy.
+
 ## How To Run Audits
 
 - Dependency boundaries: `./scripts/check_deps.sh`
 - Standard checks: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
 - Strict audit build: `cargo test --workspace --features audit-no-host-copies`
+- Determinism checkpoints (debug readback enabled): `cargo test --workspace --features \"audit-no-host-copies debug-host-copies\"`

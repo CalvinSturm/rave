@@ -25,3 +25,6 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace
+
+      - name: Validate Harness (Best Effort)
+        run: cargo run -p rave-cli --bin rave -- validate --json --best-effort

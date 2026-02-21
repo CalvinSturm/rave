@@ -34,6 +34,34 @@ Decision table for new features:
 No-host-copies checklist:
 - `docs/no_host_copies.md`
 
+## Stage graph API
+
+`rave-pipeline` provides a stable integration surface for multi-app reuse:
+
+- `StageGraph` (v1 linear chain)
+- `StageConfig` / `StageKind` (`Enhance`, `FaceBlur`, `FaceSwapAndEnhance`)
+- `ProfilePreset` (`Dev`, `ProductionStrict`, `Benchmark`)
+- `RunContract` (determinism + audit policy)
+- `UpscalePipeline::run_graph(input, output, graph, profile, contract)`
+
+v1 constraints:
+- at least one stage
+- exactly one `Enhance` stage
+- `FaceBlur` and `FaceSwapAndEnhance` are fixed stage kinds (no arbitrary closures)
+
+This keeps behavior deterministic and mechanically auditable while leaving room
+for a future DAG scheduler without breaking the public contract.
+
+## Production strict profile
+
+`ProfilePreset::ProductionStrict` is the first production profile and enforces:
+- strict no-host-copies mode (`PipelineConfig.strict_no_host_copies=true`)
+- hard-fail audit handling (warnings can be promoted to failures by contract)
+- deterministic output contract checks at canonical stage boundaries
+
+Container bytes are not the determinism boundary; canonical stage checkpoint
+hashes are used for repeat-run comparison when enabled.
+
 ## Pipeline overview
 
 VideoForge runs four concurrent stages connected by bounded async channels. Frame data stays in GPU device memory from decode to encode — no `cudaMemcpy` in steady-state operation.

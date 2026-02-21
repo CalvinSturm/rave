@@ -59,6 +59,12 @@ Feature placement decision table:
 No-host-copies checklist:
 - `docs/no_host_copies.md`
 
+Stage graph integration API:
+- `rave-pipeline` exports `StageGraph`, `StageConfig`, `ProfilePreset`,
+  `RunContract`, and `UpscalePipeline::run_graph(...)`.
+- `ProfilePreset::ProductionStrict` enables strict no-host-copies policy and
+  deterministic contract checks (via optional checkpoint hooks).
+
 ## Build
 
 ```bash
@@ -94,6 +100,9 @@ target/debug/rave benchmark --input in.mp4 --model model.onnx --skip-encode --pr
 
 # Device inventory
 target/debug/rave devices --json
+
+# Best-effort runtime validation harness
+target/debug/rave validate --json --best-effort
 ```
 
 CLI stdout/stderr + JSON contract (single source of truth):
