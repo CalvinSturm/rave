@@ -11,6 +11,7 @@ readme = "README.md"
 [features]
 default = []
 debug-alloc = []
+audit-no-host-copies = []
 
 [dependencies]
 cudarc = { workspace = true }

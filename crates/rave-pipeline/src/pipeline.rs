@@ -147,6 +147,11 @@ pub struct PipelineConfig {
     pub model_precision: ModelPrecision,
     /// Enable GPU profiler hooks in pipeline stages.
     pub enable_profiler: bool,
+    /// Enable stricter host-copy invariants for this run.
+    ///
+    /// Requires feature `audit-no-host-copies` to be enabled on this crate.
+    /// Defaults to `false` so normal runs are unaffected.
+    pub strict_no_host_copies: bool,
 }
 
 impl Default for PipelineConfig {
@@ -158,6 +163,7 @@ impl Default for PipelineConfig {
             encoder_nv12_pitch: 0,
             model_precision: ModelPrecision::F32,
             enable_profiler: true,
+            strict_no_host_copies: false,
         }
     }
 }
@@ -215,6 +221,18 @@ impl UpscalePipeline {
         B: UpscaleBackend + 'static,
         E: FrameEncoder,
     {
+        #[cfg(feature = "audit-no-host-copies")]
+        let _audit_guard =
+            rave_core::host_copy_audit::push_strict_mode(self.config.strict_no_host_copies);
+
+        #[cfg(not(feature = "audit-no-host-copies"))]
+        if self.config.strict_no_host_copies {
+            warn!(
+                "PipelineConfig.strict_no_host_copies=true ignored because \
+                 rave-pipeline was built without feature `audit-no-host-copies`"
+            );
+        }
+
         let (tx_decoded, rx_decoded) = mpsc::channel::<DecodedFrame>(self.config.decoded_capacity);
         let (tx_preprocessed, rx_preprocessed) =
             mpsc::channel::<FrameEnvelope>(self.config.preprocessed_capacity);

@@ -56,3 +56,6 @@ fn build_pipeline(ctx: Arc<GpuContext>) -> Result<UpscalePipeline> {
 - Cancellation is propagated via `CancellationToken`.
 - Queue depth and metrics are designed for production telemetry.
 - Inference backend is pluggable via `rave_core::backend::UpscaleBackend`.
+- Optional strict no-host-copies checks are controlled by
+  `PipelineConfig::strict_no_host_copies` with crate feature
+  `audit-no-host-copies`.

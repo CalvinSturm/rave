@@ -11,6 +11,7 @@ readme = "README.md"
 [features]
 default = []
 debug-alloc = ["rave-core/debug-alloc"]
+audit-no-host-copies = ["rave-core/audit-no-host-copies"]
 
 [dependencies]
 rave-core = { workspace = true }

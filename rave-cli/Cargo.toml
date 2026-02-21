@@ -16,6 +16,7 @@ doc = false
 [features]
 default = []
 debug-alloc = ["rave-core/debug-alloc", "rave-pipeline/debug-alloc", "rave-tensorrt/debug-alloc"]
+audit-no-host-copies = ["rave-core/audit-no-host-copies", "rave-pipeline/audit-no-host-copies", "rave-tensorrt/audit-no-host-copies"]
 
 [dependencies]
 rave-core = { workspace = true }

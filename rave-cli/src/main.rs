@@ -809,6 +809,7 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
             encoder_nv12_pitch: setup.nv12_pitch,
             model_precision: setup.precision,
             enable_profiler: true,
+            strict_no_host_copies: false,
         },
     );
     let progress_mode = resolve_progress_mode(args.progress, args.jsonl);
@@ -964,6 +965,7 @@ Run with: LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda-12/targets/x86_64-lin
             encoder_nv12_pitch: setup.nv12_pitch,
             model_precision: setup.precision,
             enable_profiler: true,
+            strict_no_host_copies: false,
         },
     );
     let metrics = pipeline.metrics();

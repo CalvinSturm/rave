@@ -959,6 +959,25 @@ Ensure ORT_DYLIB_PATH/ORT_LIB_LOCATION points to a valid ORT cache dir.",
             .map_err(Into::into)
     }
 
+    fn pointer_identity_mismatch(
+        input_ptr: u64,
+        texture_ptr: u64,
+        output_ptr: u64,
+        ring_slot_ptr: u64,
+    ) -> Option<String> {
+        if input_ptr != texture_ptr {
+            return Some(format!(
+                "POINTER MISMATCH: IO-bound input (0x{input_ptr:016x}) != GpuTexture (0x{texture_ptr:016x})"
+            ));
+        }
+        if output_ptr != ring_slot_ptr {
+            return Some(format!(
+                "POINTER MISMATCH: IO-bound output (0x{output_ptr:016x}) != ring slot (0x{ring_slot_ptr:016x})"
+            ));
+        }
+        None
+    }
+
     /// Verify that IO-bound device pointers match the source GpuTexture
     /// and OutputRing slot pointers exactly (pointer identity check).
     ///
@@ -969,7 +988,7 @@ Ensure ORT_DYLIB_PATH/ORT_LIB_LOCATION points to a valid ORT cache dir.",
         output_ptr: u64,
         input_texture: &GpuTexture,
         ring_slot_ptr: u64,
-    ) {
+    ) -> Result<()> {
         let texture_ptr = input_texture.device_ptr();
         debug!(
             input_ptr = format!("0x{:016x}", input_ptr),
@@ -979,16 +998,17 @@ Ensure ORT_DYLIB_PATH/ORT_LIB_LOCATION points to a valid ORT cache dir.",
             "IO-binding pointer identity audit"
         );
 
-        debug_assert_eq!(
-            input_ptr, texture_ptr,
-            "POINTER MISMATCH: IO-bound input (0x{:016x}) != GpuTexture (0x{:016x})",
-            input_ptr, texture_ptr,
-        );
-        debug_assert_eq!(
-            output_ptr, ring_slot_ptr,
-            "POINTER MISMATCH: IO-bound output (0x{:016x}) != ring slot (0x{:016x})",
-            output_ptr, ring_slot_ptr,
-        );
+        if let Some(message) =
+            Self::pointer_identity_mismatch(input_ptr, texture_ptr, output_ptr, ring_slot_ptr)
+        {
+            debug_assert!(false, "{message}");
+            #[cfg(feature = "audit-no-host-copies")]
+            if rave_core::host_copy_audit::is_strict_mode() {
+                return Err(EngineError::InvariantViolation(message));
+            }
+            rave_core::host_copy_violation!("inference", "{message}");
+        }
+        Ok(())
     }
 
     fn run_io_bound(
@@ -1024,7 +1044,7 @@ Ensure ORT_DYLIB_PATH/ORT_LIB_LOCATION points to a valid ORT cache dir.",
         let input_ptr = input.device_ptr();
 
         // Phase 7: Pointer identity audit — verify device pointers match.
-        Self::verify_pointer_identity(input_ptr, output_ptr, input, output_ptr);
+        Self::verify_pointer_identity(input_ptr, output_ptr, input, output_ptr)?;
 
         let mut binding = session.create_binding()?;
 
@@ -1058,6 +1078,24 @@ Ensure ORT_DYLIB_PATH/ORT_LIB_LOCATION points to a valid ORT cache dir.",
         session.run_binding(&binding)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pointer_audit_tests {
+    use super::TensorRtBackend;
+
+    #[test]
+    fn pointer_identity_audit_accepts_matching_addresses() {
+        let mismatch = TensorRtBackend::pointer_identity_mismatch(0x1000, 0x1000, 0x2000, 0x2000);
+        assert!(mismatch.is_none());
+    }
+
+    #[test]
+    fn pointer_identity_audit_reports_mismatch() {
+        let mismatch = TensorRtBackend::pointer_identity_mismatch(0x1000, 0x1111, 0x2000, 0x2000)
+            .expect("mismatch should be reported");
+        assert!(mismatch.contains("IO-bound input"));
     }
 }
 
