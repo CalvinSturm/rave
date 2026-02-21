@@ -1073,6 +1073,7 @@ struct ValidateSummary {
     ok: bool,
     skipped: bool,
     profile: ProfileArg,
+    model_path: Option<String>,
     runs: u32,
     determinism_equal: Option<bool>,
     max_infer_us: f64,
@@ -1084,10 +1085,12 @@ struct ValidateSummary {
 
 impl ValidateSummary {
     fn to_human(&self) -> String {
+        let model = self.model_path.as_deref().unwrap_or("n/a");
         if self.skipped {
             return format!(
-                "validate: skipped profile={} warnings={}",
+                "validate: skipped profile={} model={} warnings={}",
                 profile_label(self.profile),
+                model,
                 self.warnings.join(" | ")
             );
         }
@@ -1097,9 +1100,10 @@ impl ValidateSummary {
             .map(|v| if v { "pass" } else { "fail" })
             .unwrap_or("n/a");
         format!(
-            "validate: ok={} profile={} runs={} determinism={} max_infer_us={:.3} peak_vram_mb={} frames_decoded={} frames_encoded={} warnings={}",
+            "validate: ok={} profile={} model={} runs={} determinism={} max_infer_us={:.3} peak_vram_mb={} frames_decoded={} frames_encoded={} warnings={}",
             self.ok,
             profile_label(self.profile),
+            model,
             self.runs,
             determinism,
             self.max_infer_us,
@@ -1121,12 +1125,18 @@ impl ValidateSummary {
             .determinism_equal
             .map(|v| v.to_string())
             .unwrap_or_else(|| "null".to_string());
+        let model_path = self
+            .model_path
+            .as_ref()
+            .map(|path| json_string(path))
+            .unwrap_or_else(|| "null".to_string());
         format!(
-            "{{\"schema_version\":{},\"command\":\"validate\",\"ok\":{},\"skipped\":{},\"profile\":{},\"runs\":{},\"determinism_equal\":{},\"max_infer_us\":{},\"peak_vram_mb\":{},\"frames\":{{\"decoded\":{},\"encoded\":{}}},\"warnings\":[{}]}}",
+            "{{\"schema_version\":{},\"command\":\"validate\",\"ok\":{},\"skipped\":{},\"profile\":{},\"model_path\":{},\"runs\":{},\"determinism_equal\":{},\"max_infer_us\":{},\"peak_vram_mb\":{},\"frames\":{{\"decoded\":{},\"encoded\":{}}},\"warnings\":[{}]}}",
             JSON_SCHEMA_VERSION,
             self.ok,
             self.skipped,
             json_string(profile_label(self.profile)),
+            model_path,
             self.runs,
             determinism,
             json_number(self.max_infer_us),
@@ -1212,20 +1222,52 @@ fn env_flag_enabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn resolve_fixture_model_path(fixture: &ValidateFixture) -> Result<Option<PathBuf>> {
+const DEFAULT_VALIDATE_MODEL_RELATIVE: &str = "tests/assets/models/resize2x_rgb.onnx";
+
+fn default_validate_model_path() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir.parent().unwrap_or(manifest_dir);
+    workspace_root.join(DEFAULT_VALIDATE_MODEL_RELATIVE)
+}
+
+fn resolve_fixture_model_path_with_default_and_lookup<F>(
+    fixture: &ValidateFixture,
+    default_model: &Path,
+    env_lookup: F,
+) -> Result<Option<PathBuf>>
+where
+    F: Fn(&str) -> Option<String>,
+{
     if let Some(path) = &fixture.model {
         return Ok(Some(path.clone()));
     }
     if let Some(env_name) = &fixture.model_env {
-        let value = std::env::var(env_name).map_err(|_| {
-            EngineError::Pipeline(format!(
-                "Validate fixture requires env var {} to resolve model path",
+        if let Some(value) = env_lookup(env_name) {
+            return Ok(Some(PathBuf::from(value)));
+        }
+        if env_name == "RAVE_VALIDATE_MODEL" {
+            if default_model.exists() {
+                return Ok(Some(default_model.to_path_buf()));
+            }
+            return Err(EngineError::Pipeline(format!(
+                "Validate fixture default model not found: {}. Set {} to override.",
+                default_model.display(),
                 env_name
-            ))
-        })?;
-        return Ok(Some(PathBuf::from(value)));
+            )));
+        }
+        return Err(EngineError::Pipeline(format!(
+            "Validate fixture requires env var {} to resolve model path",
+            env_name
+        )));
     }
     Ok(None)
+}
+
+fn resolve_fixture_model_path(fixture: &ValidateFixture) -> Result<Option<PathBuf>> {
+    let fallback = default_validate_model_path();
+    resolve_fixture_model_path_with_default_and_lookup(fixture, &fallback, |name| {
+        std::env::var(name).ok()
+    })
 }
 
 fn emit_validate_skip(
@@ -1233,12 +1275,14 @@ fn emit_validate_skip(
     json: bool,
     progress_mode: ProgressMode,
     runs: u32,
+    model_path: Option<&Path>,
     warning: String,
 ) {
     let summary = ValidateSummary {
         ok: true,
         skipped: true,
         profile,
+        model_path: model_path.map(|path| path.display().to_string()),
         runs,
         determinism_equal: None,
         max_infer_us: 0.0,
@@ -1305,6 +1349,7 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
             args.json,
             progress_mode,
             0,
+            None,
             "no input provided; validation skipped".into(),
         );
         return Ok(());
@@ -1313,7 +1358,14 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
     let fixture_model = match fixture.as_ref().map(resolve_fixture_model_path).transpose() {
         Ok(model) => model.flatten(),
         Err(err) if best_effort => {
-            emit_validate_skip(profile_arg, args.json, progress_mode, 0, err.to_string());
+            emit_validate_skip(
+                profile_arg,
+                args.json,
+                progress_mode,
+                0,
+                None,
+                err.to_string(),
+            );
             return Ok(());
         }
         Err(err) => return Err(err),
@@ -1324,6 +1376,7 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
         .clone()
         .or_else(|| fixture.as_ref().and_then(|f| f.graph.clone()));
     let model = args.model.clone().or(fixture_model);
+    let resolved_model_path = model.clone();
     let mut graph = match load_stage_graph(graph_path.as_deref(), model.as_ref(), None) {
         Ok(graph) => graph,
         Err(err) if best_effort => {
@@ -1332,6 +1385,7 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
                 args.json,
                 progress_mode,
                 0,
+                resolved_model_path.as_deref(),
                 format!("validation graph unavailable: {err}"),
             );
             return Ok(());
@@ -1382,6 +1436,7 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
                 args.json,
                 progress_mode,
                 0,
+                resolved_model_path.as_deref(),
                 format!("runtime unavailable: {err}"),
             );
             return Ok(());
@@ -1447,6 +1502,7 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
                     args.json,
                     progress_mode,
                     idx,
+                    resolved_model_path.as_deref(),
                     format!("validation execution skipped: {err}"),
                 );
                 return Ok(());
@@ -1517,6 +1573,9 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
         ok: true,
         skipped: false,
         profile: profile_arg,
+        model_path: resolved_model_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
         runs,
         determinism_equal,
         max_infer_us: infer_avg,
@@ -2161,5 +2220,73 @@ fn override_enhance_model_path(graph: &mut StageGraph, model_path: &Path) {
         if let StageConfig::Enhance { config, .. } = stage {
             config.model_path = model_path.to_path_buf();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixture_model_env_override_takes_precedence() {
+        let fixture = ValidateFixture {
+            model_env: Some("RAVE_VALIDATE_MODEL".into()),
+            ..ValidateFixture::default()
+        };
+        let resolved = resolve_fixture_model_path_with_default_and_lookup(
+            &fixture,
+            Path::new("/tmp/default_resize2x.onnx"),
+            |name| {
+                if name == "RAVE_VALIDATE_MODEL" {
+                    Some("/tmp/override_model.onnx".into())
+                } else {
+                    None
+                }
+            },
+        )
+        .expect("env override should resolve");
+
+        assert_eq!(resolved, Some(PathBuf::from("/tmp/override_model.onnx")));
+    }
+
+    #[test]
+    fn fixture_model_env_falls_back_to_committed_model() {
+        let fixture = ValidateFixture {
+            model_env: Some("RAVE_VALIDATE_MODEL".into()),
+            ..ValidateFixture::default()
+        };
+        let committed = default_validate_model_path();
+        assert!(
+            committed.exists(),
+            "committed validate model is missing at {}",
+            committed.display()
+        );
+
+        let resolved =
+            resolve_fixture_model_path_with_default_and_lookup(&fixture, &committed, |_| None)
+                .expect("fallback model should resolve");
+        assert_eq!(resolved, Some(committed));
+    }
+
+    #[test]
+    fn fixture_model_missing_default_is_actionable() {
+        let fixture = ValidateFixture {
+            model_env: Some("RAVE_VALIDATE_MODEL".into()),
+            ..ValidateFixture::default()
+        };
+        let missing = std::env::temp_dir().join(format!(
+            "rave_missing_model_{}_{}.onnx",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let err = resolve_fixture_model_path_with_default_and_lookup(&fixture, &missing, |_| None)
+            .expect_err("missing fallback model should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("default model not found"));
+        assert!(msg.contains("RAVE_VALIDATE_MODEL"));
+        assert!(msg.contains(missing.to_string_lossy().as_ref()));
     }
 }
