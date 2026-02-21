@@ -2,8 +2,7 @@
 //! BSF (bitstream filter) FFI declarations missing from `ffmpeg-sys-next` v8.
 
 use std::ffi::CString;
-
-use rave_core::error::{EngineError, Result};
+use std::fmt::{Display, Formatter};
 
 // ── BSF FFI ──────────────────────────────────────────────────────────────────
 //
@@ -47,11 +46,25 @@ unsafe extern "C" {
     pub fn av_bsf_free(ctx: *mut *mut AVBSFContext);
 }
 
-/// Translate an FFmpeg error code into an [`EngineError`].
+/// Structured FFmpeg error details for module-specific wrapping.
+#[derive(Debug, Clone)]
+pub struct FfmpegErrorDetail {
+    pub context: String,
+    pub code: i32,
+    pub message: String,
+}
+
+impl Display for FfmpegErrorDetail {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {} (code {})", self.context, self.message, self.code)
+    }
+}
+
+/// Translate an FFmpeg return code into a structured error.
 ///
-/// On success (ret >= 0) this is a no-op.  On failure, `av_strerror` is
+/// On success (`ret >= 0`) this is a no-op. On failure, `av_strerror` is
 /// called to produce a human-readable message.
-pub fn check_ffmpeg(ret: i32, context: &str) -> Result<()> {
+pub fn check_ffmpeg(ret: i32, context: &str) -> std::result::Result<(), FfmpegErrorDetail> {
     if ret >= 0 {
         return Ok(());
     }
@@ -67,10 +80,14 @@ pub fn check_ffmpeg(ret: i32, context: &str) -> Result<()> {
         .unwrap_or("unknown error")
         .to_string();
 
-    Err(EngineError::Demux(format!("{context}: {msg} (code {ret})")))
+    Err(FfmpegErrorDetail {
+        context: context.to_string(),
+        code: ret,
+        message: msg,
+    })
 }
 
 /// Convert a Rust `&str` to a `CString`, mapping NUL bytes to an error.
-pub fn to_cstring(s: &str) -> Result<CString> {
-    CString::new(s).map_err(|e| EngineError::Demux(format!("Invalid path string: {e}")))
+pub fn to_cstring(s: &str) -> std::result::Result<CString, String> {
+    CString::new(s).map_err(|e| format!("Invalid path string: {e}"))
 }
