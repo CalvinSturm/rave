@@ -568,13 +568,18 @@ mod tests {
 
     use super::*;
 
+    struct DelayedPacket {
+        pkt: BitstreamPacket,
+        again_before_recv: usize,
+    }
+
     struct FakeIo {
         reads: VecDeque<ReadOutcome<u32>>,
-        recv_queue: VecDeque<BitstreamPacket>,
-        flush_tail: VecDeque<BitstreamPacket>,
+        recv_queue: VecDeque<DelayedPacket>,
+        flush_tail: VecDeque<DelayedPacket>,
         eagain_before_accept: HashMap<u32, usize>,
         send_attempts: HashMap<u32, usize>,
-        outputs_per_packet: HashMap<u32, Vec<BitstreamPacket>>,
+        outputs_per_packet: HashMap<u32, Vec<DelayedPacket>>,
         flush_sent: bool,
         send_log: Vec<SendInput<u32>>,
     }
@@ -593,13 +598,31 @@ mod tests {
             }
         }
 
+        fn push_initial_delayed(&mut self, packet: BitstreamPacket, again_before_recv: usize) {
+            self.recv_queue.push_back(DelayedPacket {
+                pkt: packet,
+                again_before_recv,
+            });
+        }
+
         fn with_initial_recv(mut self, packets: Vec<BitstreamPacket>) -> Self {
-            self.recv_queue.extend(packets);
+            for packet in packets {
+                self.push_initial_delayed(packet, 0);
+            }
             self
         }
 
+        fn push_flush_tail_delayed(&mut self, packet: BitstreamPacket, again_before_recv: usize) {
+            self.flush_tail.push_back(DelayedPacket {
+                pkt: packet,
+                again_before_recv,
+            });
+        }
+
         fn with_flush_tail(mut self, packets: Vec<BitstreamPacket>) -> Self {
-            self.flush_tail.extend(packets);
+            for packet in packets {
+                self.push_flush_tail_delayed(packet, 0);
+            }
             self
         }
 
@@ -608,8 +631,25 @@ mod tests {
             self
         }
 
+        fn push_output_delayed(
+            &mut self,
+            packet_id: u32,
+            packet: BitstreamPacket,
+            again_before_recv: usize,
+        ) {
+            self.outputs_per_packet
+                .entry(packet_id)
+                .or_default()
+                .push(DelayedPacket {
+                    pkt: packet,
+                    again_before_recv,
+                });
+        }
+
         fn with_outputs(mut self, packet_id: u32, outputs: Vec<BitstreamPacket>) -> Self {
-            self.outputs_per_packet.insert(packet_id, outputs);
+            for packet in outputs {
+                self.push_output_delayed(packet_id, packet, 0);
+            }
             self
         }
     }
@@ -618,8 +658,16 @@ mod tests {
         type Packet = u32;
 
         fn recv_filtered(&mut self) -> Result<RecvOutcome> {
-            if let Some(pkt) = self.recv_queue.pop_front() {
-                return Ok(RecvOutcome::Packet(pkt));
+            if let Some(front) = self.recv_queue.front_mut() {
+                if front.again_before_recv > 0 {
+                    front.again_before_recv -= 1;
+                    return Ok(RecvOutcome::Again);
+                }
+                let packet = self
+                    .recv_queue
+                    .pop_front()
+                    .expect("front packet should exist after delay is consumed");
+                return Ok(RecvOutcome::Packet(packet.pkt));
             }
             if self.flush_sent {
                 return Ok(RecvOutcome::Eof);
@@ -722,6 +770,139 @@ mod tests {
                 SendInput::Flush,
             ],
             "packet 1 must be retried after EAGAIN before packet 2 is read"
+        );
+    }
+
+    fn retry_vectors(len: usize, max_retry: usize) -> Vec<Vec<usize>> {
+        if len == 0 {
+            return vec![Vec::new()];
+        }
+        let tails = retry_vectors(len - 1, max_retry);
+        let mut out = Vec::new();
+        for head in 0..=max_retry {
+            for tail in &tails {
+                let mut seq = Vec::with_capacity(len);
+                seq.push(head);
+                seq.extend(tail.iter().copied());
+                out.push(seq);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn bsf_machine_permutations_preserve_order_and_eos_semantics() {
+        let max_retry = 2usize;
+        let mut scenario_count = 0usize;
+
+        for packet_count in 0..=2usize {
+            let send_retry_variants = retry_vectors(packet_count, max_retry);
+            let recv_retry_variants = retry_vectors(packet_count, max_retry);
+
+            for send_retries in &send_retry_variants {
+                for recv_retries in &recv_retry_variants {
+                    for initial_present in [false, true] {
+                        for initial_delay in 0..=max_retry {
+                            if !initial_present && initial_delay != 0 {
+                                continue;
+                            }
+
+                            for flush_tail_len in 0..=2usize {
+                                for flush_tail_delays in retry_vectors(flush_tail_len, max_retry) {
+                                    scenario_count += 1;
+
+                                    let mut reads = Vec::with_capacity(packet_count + 1);
+                                    for id in 1..=packet_count {
+                                        reads.push(ReadOutcome::Packet(id as u32));
+                                    }
+                                    reads.push(ReadOutcome::Eof);
+
+                                    let mut io = FakeIo::new(reads);
+                                    let mut expected_out = Vec::<u8>::new();
+
+                                    if initial_present {
+                                        io.push_initial_delayed(pkt(50), initial_delay);
+                                        expected_out.push(50);
+                                    }
+
+                                    for idx in 0..packet_count {
+                                        let packet_id = (idx + 1) as u32;
+                                        let output_id = 100 + idx as u8;
+                                        io.eagain_before_accept
+                                            .insert(packet_id, send_retries[idx]);
+                                        io.push_output_delayed(
+                                            packet_id,
+                                            pkt(output_id),
+                                            recv_retries[idx],
+                                        );
+                                        expected_out.push(output_id);
+                                    }
+
+                                    for (idx, delay) in
+                                        flush_tail_delays.iter().copied().enumerate()
+                                    {
+                                        let output_id = 200 + idx as u8;
+                                        io.push_flush_tail_delayed(pkt(output_id), delay);
+                                        expected_out.push(output_id);
+                                    }
+
+                                    let mut machine = BsfMachine::<u32>::default();
+                                    let mut observed_out = Vec::<u8>::new();
+                                    loop {
+                                        match machine.poll(&mut io).expect("poll should succeed") {
+                                            Some(pkt) => observed_out.push(pkt.data[0]),
+                                            None => break,
+                                        }
+                                    }
+
+                                    assert_eq!(
+                                        observed_out, expected_out,
+                                        "output order/loss mismatch: packets={packet_count} send={send_retries:?} recv={recv_retries:?} initial_present={initial_present} initial_delay={initial_delay} flush_tail={flush_tail_delays:?}"
+                                    );
+
+                                    let flush_count = io
+                                        .send_log
+                                        .iter()
+                                        .filter(|item| matches!(item, SendInput::Flush))
+                                        .count();
+                                    assert_eq!(
+                                        flush_count, 1,
+                                        "flush should be sent exactly once: packets={packet_count} send={send_retries:?} recv={recv_retries:?} flush_tail={flush_tail_delays:?}"
+                                    );
+
+                                    let mut expected_send_log = Vec::<SendInput<u32>>::new();
+                                    for idx in 0..packet_count {
+                                        let packet_id = (idx + 1) as u32;
+                                        for _ in 0..=send_retries[idx] {
+                                            expected_send_log.push(SendInput::Packet(packet_id));
+                                        }
+                                    }
+                                    expected_send_log.push(SendInput::Flush);
+                                    assert_eq!(
+                                        io.send_log, expected_send_log,
+                                        "pending retry/send ordering mismatch: packets={packet_count} send={send_retries:?} recv={recv_retries:?} flush_tail={flush_tail_delays:?}"
+                                    );
+
+                                    for _ in 0..3 {
+                                        assert!(
+                                            machine
+                                                .poll(&mut io)
+                                                .expect("terminal EOS poll should not fail")
+                                                .is_none(),
+                                            "terminal EOS should be sticky: packets={packet_count} send={send_retries:?} recv={recv_retries:?} flush_tail={flush_tail_delays:?}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            scenario_count > 0,
+            "permutation test should execute at least one scenario"
         );
     }
 }
