@@ -311,6 +311,15 @@ enum ProfileArg {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StrictSettings {
+    strict_invariants: bool,
+    strict_vram_limit: bool,
+    strict_no_host_copies: bool,
+    determinism_policy: DeterminismPolicy,
+    enable_ort_reexec_gate: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProgressMode {
     Off,
     Human,
@@ -487,10 +496,15 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 fn maybe_reexec_with_ort_ld_library_path() {
-    let mut args = std::env::args();
-    let _bin = args.next();
-    let sub = args.next().unwrap_or_default().to_ascii_lowercase();
-    if !should_reexec_for_command(&sub, mock_run_enabled()) {
+    let args: Vec<String> = std::env::args().collect();
+    let sub = args
+        .get(1)
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let profile = profile_arg_from_cli_tokens(if args.len() > 2 { &args[2..] } else { &[] })
+        .unwrap_or(ProfileArg::Dev);
+    let settings = strict_settings_for_profile_arg(profile);
+    if !should_reexec_for_command(&sub, mock_run_enabled(), settings.enable_ort_reexec_gate) {
         return;
     }
     if std::env::var_os("RAVE_ORT_LD_REEXEC").is_some() {
@@ -542,12 +556,37 @@ fn maybe_reexec_with_ort_ld_library_path() {
 }
 
 #[cfg(target_os = "linux")]
-fn should_reexec_for_command(cmd: &str, mock_mode: bool) -> bool {
-    if mock_mode {
+fn should_reexec_for_command(cmd: &str, mock_mode: bool, enable_ort_reexec_gate: bool) -> bool {
+    if mock_mode || !enable_ort_reexec_gate {
         return false;
     }
 
     matches!(cmd, "upscale" | "benchmark" | "validate")
+}
+
+#[cfg(target_os = "linux")]
+fn profile_arg_from_cli_tokens(tokens: &[String]) -> Option<ProfileArg> {
+    let mut it = tokens.iter();
+    while let Some(token) = it.next() {
+        if let Some((flag, value)) = token.split_once('=')
+            && flag == "--profile"
+        {
+            return match value.to_ascii_lowercase().as_str() {
+                "dev" => Some(ProfileArg::Dev),
+                "production_strict" => Some(ProfileArg::ProductionStrict),
+                _ => None,
+            };
+        }
+        if token == "--profile" {
+            let value = it.next()?;
+            return match value.to_ascii_lowercase().as_str() {
+                "dev" => Some(ProfileArg::Dev),
+                "production_strict" => Some(ProfileArg::ProductionStrict),
+                _ => None,
+            };
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -885,9 +924,9 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
         resolved.fps_den,
     )?;
 
-    let pipeline = UpscalePipeline::new(
-        setup.ctx.clone(),
-        setup.kernels.clone(),
+    let pipeline = UpscalePipeline::new(setup.ctx.clone(), setup.kernels.clone(), {
+        let (strict_no_host_copies, strict_invariants) =
+            strict_pipeline_flags_for_profile(args.shared.profile);
         PipelineConfig {
             decoded_capacity: setup.decoded_capacity,
             preprocessed_capacity: setup.preprocessed_capacity,
@@ -895,10 +934,10 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
             encoder_nv12_pitch: setup.nv12_pitch,
             model_precision: setup.precision,
             enable_profiler: true,
-            strict_no_host_copies: matches!(args.shared.profile, ProfileArg::ProductionStrict),
-            strict_invariants: matches!(args.shared.profile, ProfileArg::ProductionStrict),
-        },
-    );
+            strict_no_host_copies,
+            strict_invariants,
+        }
+    });
     let progress_mode = resolve_progress_mode(args.progress, args.jsonl);
     let metrics = pipeline.metrics();
     let progress = spawn_progress_reporter("upscale", metrics, progress_mode);
@@ -1042,12 +1081,12 @@ async fn run_upscale_with_graph(
     let (ctx, kernels) = pipeline_create_context_and_kernels(
         device,
         args.shared.vram_limit,
-        matches!(args.shared.profile, ProfileArg::ProductionStrict),
+        strict_vram_limit_for_profile(args.shared.profile),
     )?;
 
-    let pipeline = UpscalePipeline::new(
-        ctx.clone(),
-        kernels,
+    let pipeline = UpscalePipeline::new(ctx.clone(), kernels, {
+        let (strict_no_host_copies, strict_invariants) =
+            strict_pipeline_flags_for_profile(args.shared.profile);
         PipelineConfig {
             decoded_capacity: args.shared.decode_cap.unwrap_or(4),
             preprocessed_capacity: args.shared.preprocess_cap.unwrap_or(2),
@@ -1057,10 +1096,10 @@ async fn run_upscale_with_graph(
                 args.shared.precision.as_deref().unwrap_or("fp32"),
             )?,
             enable_profiler: true,
-            strict_no_host_copies: false,
-            strict_invariants: matches!(args.shared.profile, ProfileArg::ProductionStrict),
-        },
-    );
+            strict_no_host_copies,
+            strict_invariants,
+        }
+    });
 
     let mut contract = RunContract::for_profile(profile);
     contract.requested_device = device as u32;
@@ -1453,14 +1492,23 @@ fn resolve_fixture_model_path(fixture: &ValidateFixture) -> Result<Option<PathBu
     })
 }
 
+fn strict_vram_limit_for_profile(profile: ProfileArg) -> bool {
+    strict_settings_for_profile_arg(profile).strict_vram_limit
+}
+
+fn strict_pipeline_flags_for_profile(profile: ProfileArg) -> (bool, bool) {
+    let strict = strict_settings_for_profile_arg(profile);
+    (strict.strict_no_host_copies, strict.strict_invariants)
+}
+
 fn determinism_policy_for_validate(
     profile: ProfileArg,
     allow_hash_skipped: bool,
 ) -> DeterminismPolicy {
-    if matches!(profile, ProfileArg::ProductionStrict) || !allow_hash_skipped {
+    if !allow_hash_skipped {
         DeterminismPolicy::RequireHash
     } else {
-        DeterminismPolicy::BestEffort
+        strict_settings_for_profile_arg(profile).determinism_policy
     }
 }
 
@@ -1655,7 +1703,7 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
     let (ctx, kernels) = match pipeline_create_context_and_kernels(
         device,
         None,
-        matches!(profile_arg, ProfileArg::ProductionStrict),
+        strict_vram_limit_for_profile(profile_arg),
     ) {
         Ok(resources) => resources,
         Err(err) if best_effort => {
@@ -1671,9 +1719,9 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
         }
         Err(err) => return Err(err),
     };
-    let pipeline = UpscalePipeline::new(
-        ctx,
-        kernels,
+    let pipeline = UpscalePipeline::new(ctx, kernels, {
+        let (strict_no_host_copies, strict_invariants) =
+            strict_pipeline_flags_for_profile(profile_arg);
         PipelineConfig {
             decoded_capacity: 4,
             preprocessed_capacity: 2,
@@ -1681,10 +1729,10 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
             encoder_nv12_pitch: 256,
             model_precision: pipeline_parse_precision("fp16")?,
             enable_profiler: true,
-            strict_no_host_copies: false,
-            strict_invariants: matches!(profile_arg, ProfileArg::ProductionStrict),
-        },
-    );
+            strict_no_host_copies,
+            strict_invariants,
+        }
+    });
 
     let mut contract = RunContract::for_profile(profile);
     contract.requested_device = device as u32;
@@ -1941,9 +1989,9 @@ Run with: LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda-12/targets/x86_64-lin
     }
 
     let decoder = create_decoder(setup, &args.shared.input)?;
-    let pipeline = UpscalePipeline::new(
-        setup.ctx.clone(),
-        setup.kernels.clone(),
+    let pipeline = UpscalePipeline::new(setup.ctx.clone(), setup.kernels.clone(), {
+        let (strict_no_host_copies, strict_invariants) =
+            strict_pipeline_flags_for_profile(args.shared.profile);
         PipelineConfig {
             decoded_capacity: setup.decoded_capacity,
             preprocessed_capacity: setup.preprocessed_capacity,
@@ -1951,10 +1999,10 @@ Run with: LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda-12/targets/x86_64-lin
             encoder_nv12_pitch: setup.nv12_pitch,
             model_precision: setup.precision,
             enable_profiler: true,
-            strict_no_host_copies: false,
-            strict_invariants: matches!(args.shared.profile, ProfileArg::ProductionStrict),
-        },
-    );
+            strict_no_host_copies,
+            strict_invariants,
+        }
+    });
     let metrics = pipeline.metrics();
     let progress = spawn_progress_reporter("benchmark", metrics.clone(), progress_mode);
 
@@ -2420,6 +2468,7 @@ fn benchmark_output_path(args: &BenchmarkArgs) -> PathBuf {
 
 async fn prepare_runtime(shared: &SharedVideoArgs, input: ResolvedInput) -> Result<RuntimeSetup> {
     let device = shared.device.unwrap_or(0) as usize;
+    let strict_vram_limit = strict_vram_limit_for_profile(shared.profile);
     pipeline_prepare_runtime(&RuntimeRequest {
         model_path: shared.model.clone(),
         precision: shared
@@ -2428,7 +2477,7 @@ async fn prepare_runtime(shared: &SharedVideoArgs, input: ResolvedInput) -> Resu
             .unwrap_or_else(|| "fp32".to_string()),
         device,
         vram_limit_mib: shared.vram_limit,
-        strict_vram_limit: matches!(shared.profile, ProfileArg::ProductionStrict),
+        strict_vram_limit,
         decode_cap: shared.decode_cap,
         preprocess_cap: shared.preprocess_cap,
         upscale_cap: shared.upscale_cap,
@@ -2493,6 +2542,31 @@ fn profile_to_preset(profile: ProfileArg) -> ProfilePreset {
         ProfileArg::Dev => ProfilePreset::Dev,
         ProfileArg::ProductionStrict => ProfilePreset::ProductionStrict,
     }
+}
+
+fn strict_settings_for_profile(profile: ProfilePreset) -> StrictSettings {
+    match profile {
+        ProfilePreset::ProductionStrict => StrictSettings {
+            strict_invariants: true,
+            strict_vram_limit: true,
+            strict_no_host_copies: true,
+            determinism_policy: DeterminismPolicy::RequireHash,
+            enable_ort_reexec_gate: true,
+        },
+        ProfilePreset::Dev | ProfilePreset::Benchmark => StrictSettings {
+            strict_invariants: false,
+            strict_vram_limit: false,
+            strict_no_host_copies: false,
+            determinism_policy: DeterminismPolicy::BestEffort,
+            // Preserve existing behavior: loader re-exec remains enabled for
+            // ORT-backed commands even outside production_strict.
+            enable_ort_reexec_gate: true,
+        },
+    }
+}
+
+fn strict_settings_for_profile_arg(profile: ProfileArg) -> StrictSettings {
+    strict_settings_for_profile(profile_to_preset(profile))
 }
 
 fn profile_label(profile: ProfileArg) -> &'static str {
@@ -2611,43 +2685,88 @@ mod tests {
         assert!(msg.contains(missing.to_string_lossy().as_ref()));
     }
 
+    #[test]
+    fn strict_settings_production_strict_enables_all_guards() {
+        let settings = strict_settings_for_profile(ProfilePreset::ProductionStrict);
+        assert!(settings.strict_invariants);
+        assert!(settings.strict_vram_limit);
+        assert!(settings.strict_no_host_copies);
+        assert_eq!(settings.determinism_policy, DeterminismPolicy::RequireHash);
+        assert!(settings.enable_ort_reexec_gate);
+    }
+
+    #[test]
+    fn strict_settings_dev_preserves_default_behavior() {
+        let settings = strict_settings_for_profile(ProfilePreset::Dev);
+        assert!(!settings.strict_invariants);
+        assert!(!settings.strict_vram_limit);
+        assert!(!settings.strict_no_host_copies);
+        assert_eq!(settings.determinism_policy, DeterminismPolicy::BestEffort);
+        assert!(settings.enable_ort_reexec_gate);
+    }
+
+    #[test]
+    fn command_helpers_consume_strict_settings_bundle() {
+        let strict = strict_settings_for_profile_arg(ProfileArg::ProductionStrict);
+        let (strict_no_host_copies, strict_invariants) =
+            strict_pipeline_flags_for_profile(ProfileArg::ProductionStrict);
+        assert_eq!(strict_no_host_copies, strict.strict_no_host_copies);
+        assert_eq!(strict_invariants, strict.strict_invariants);
+        assert_eq!(
+            strict_vram_limit_for_profile(ProfileArg::ProductionStrict),
+            strict.strict_vram_limit
+        );
+        assert_eq!(
+            determinism_policy_for_validate(ProfileArg::ProductionStrict, true),
+            strict.determinism_policy
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn reexec_gate_includes_upscale() {
-        assert!(should_reexec_for_command("upscale", false));
+        assert!(should_reexec_for_command("upscale", false, true));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn reexec_gate_includes_benchmark() {
-        assert!(should_reexec_for_command("benchmark", false));
+        assert!(should_reexec_for_command("benchmark", false, true));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn reexec_gate_includes_validate() {
-        assert!(should_reexec_for_command("validate", false));
+        assert!(should_reexec_for_command("validate", false, true));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn reexec_gate_excludes_probe() {
-        assert!(!should_reexec_for_command("probe", false));
+        assert!(!should_reexec_for_command("probe", false, true));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn reexec_gate_excludes_devices() {
-        assert!(!should_reexec_for_command("devices", false));
+        assert!(!should_reexec_for_command("devices", false, true));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn reexec_gate_excludes_all_commands_in_mock_mode() {
-        assert!(!should_reexec_for_command("upscale", true));
-        assert!(!should_reexec_for_command("benchmark", true));
-        assert!(!should_reexec_for_command("validate", true));
-        assert!(!should_reexec_for_command("probe", true));
-        assert!(!should_reexec_for_command("devices", true));
+        assert!(!should_reexec_for_command("upscale", true, true));
+        assert!(!should_reexec_for_command("benchmark", true, true));
+        assert!(!should_reexec_for_command("validate", true, true));
+        assert!(!should_reexec_for_command("probe", true, true));
+        assert!(!should_reexec_for_command("devices", true, true));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reexec_gate_respects_profile_gate_toggle() {
+        assert!(!should_reexec_for_command("upscale", false, false));
+        assert!(!should_reexec_for_command("benchmark", false, false));
+        assert!(!should_reexec_for_command("validate", false, false));
     }
 }
