@@ -474,6 +474,9 @@ enum OrtProviderKind {
 }
 
 #[cfg(target_os = "linux")]
+type ProviderCandidate = (PathBuf, &'static str);
+
+#[cfg(target_os = "linux")]
 impl OrtProviderKind {
     fn soname(self) -> &'static str {
         match self {
@@ -726,32 +729,34 @@ impl TensorRtBackend {
     }
 
     #[cfg(target_os = "linux")]
-    fn ort_provider_search_dirs() -> Vec<(PathBuf, &'static str)> {
-        let mut dirs = Vec::<(PathBuf, &'static str)>::new();
-        if let Some(dir) = env::var_os("ORT_DYLIB_PATH") {
-            dirs.push((PathBuf::from(dir), "ORT_DYLIB_PATH"));
+    fn provider_dir_candidates(
+        ort_dylib_path: Option<PathBuf>,
+        ort_lib_location: Option<PathBuf>,
+        exe_dir: Option<PathBuf>,
+        cache_dirs: Vec<PathBuf>,
+        on_wsl: bool,
+    ) -> Vec<ProviderCandidate> {
+        let mut dirs = Vec::<ProviderCandidate>::new();
+        if let Some(dir) = ort_dylib_path {
+            dirs.push((dir, "ORT_DYLIB_PATH"));
         }
-        if let Some(dir) = env::var_os("ORT_LIB_LOCATION") {
-            dirs.push((PathBuf::from(dir), "ORT_LIB_LOCATION"));
+        if let Some(dir) = ort_lib_location {
+            dirs.push((dir, "ORT_LIB_LOCATION"));
         }
-        if Self::is_wsl2() {
-            for dir in Self::ort_provider_cache_dirs_newest_first() {
+        if on_wsl {
+            for dir in cache_dirs {
                 dirs.push((dir, "ort_cache_newest"));
             }
-            if let Ok(exe) = env::current_exe()
-                && let Some(dir) = exe.parent()
-            {
-                dirs.push((dir.to_path_buf(), "exe_dir"));
+            if let Some(dir) = exe_dir {
+                dirs.push((dir.clone(), "exe_dir"));
                 dirs.push((dir.join("deps"), "exe_dir/deps"));
             }
         } else {
-            if let Ok(exe) = env::current_exe()
-                && let Some(dir) = exe.parent()
-            {
-                dirs.push((dir.to_path_buf(), "exe_dir"));
+            if let Some(dir) = exe_dir {
+                dirs.push((dir.clone(), "exe_dir"));
                 dirs.push((dir.join("deps"), "exe_dir/deps"));
             }
-            for dir in Self::ort_provider_cache_dirs_newest_first() {
+            for dir in cache_dirs {
                 dirs.push((dir, "ort_cache_newest"));
             }
         }
@@ -759,6 +764,56 @@ impl TensorRtBackend {
         let mut uniq = HashSet::<PathBuf>::new();
         dirs.retain(|(p, _)| uniq.insert(p.clone()));
         dirs
+    }
+
+    #[cfg(target_os = "linux")]
+    fn ort_provider_search_inputs() -> (
+        Option<PathBuf>,
+        Option<PathBuf>,
+        Option<PathBuf>,
+        Vec<PathBuf>,
+        bool,
+    ) {
+        let ort_dylib_path = env::var_os("ORT_DYLIB_PATH").map(PathBuf::from);
+        let ort_lib_location = env::var_os("ORT_LIB_LOCATION").map(PathBuf::from);
+        let exe_dir = env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()));
+        let cache_dirs = Self::ort_provider_cache_dirs_newest_first();
+        let on_wsl = Self::is_wsl2();
+        (
+            ort_dylib_path,
+            ort_lib_location,
+            exe_dir,
+            cache_dirs,
+            on_wsl,
+        )
+    }
+
+    #[cfg(all(target_os = "linux", test))]
+    fn ort_provider_search_dirs() -> Vec<ProviderCandidate> {
+        let (ort_dylib_path, ort_lib_location, exe_dir, cache_dirs, on_wsl) =
+            Self::ort_provider_search_inputs();
+        Self::provider_dir_candidates(
+            ort_dylib_path,
+            ort_lib_location,
+            exe_dir,
+            cache_dirs,
+            on_wsl,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn render_provider_candidates(candidates: &[ProviderCandidate]) -> String {
+        if candidates.is_empty() {
+            return "none".into();
+        }
+        candidates
+            .iter()
+            .enumerate()
+            .map(|(idx, (dir, source))| format!("{}:{source}:{}", idx + 1, dir.display()))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     #[cfg(all(target_os = "linux", test))]
@@ -778,33 +833,77 @@ impl TensorRtBackend {
     }
 
     #[cfg(target_os = "linux")]
-    fn resolve_ort_provider_dir(kind: OrtProviderKind) -> Result<(PathBuf, &'static str)> {
+    fn resolve_provider_dir(
+        kind: OrtProviderKind,
+        candidates: &[ProviderCandidate],
+        ort_dylib_path: Option<&Path>,
+        ort_lib_location: Option<&Path>,
+        command: &str,
+        mode: &str,
+        ep_mode: &str,
+    ) -> Result<(PathBuf, &'static str)> {
         let provider = kind.soname();
-        for (dir, source) in Self::ort_provider_search_dirs() {
+        for (dir, source) in candidates {
             let shared = dir.join("libonnxruntime_providers_shared.so");
             let provider_path = dir.join(provider);
             if shared.is_file() && provider_path.is_file() {
                 info!(
                     path = %shared.display(),
-                    source,
+                    source = *source,
                     "ORT providers_shared resolved"
                 );
                 info!(
                     provider = kind.label(),
                     path = %provider_path.display(),
-                    source,
+                    source = *source,
                     "ORT provider resolved"
                 );
-                Self::configure_ort_loader_path(&dir);
-                return Ok((dir, source));
+                return Ok((dir.clone(), *source));
             }
         }
 
+        let render_path = |v: Option<&Path>| -> String {
+            v.map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<unset>".to_string())
+        };
+        let checked = Self::render_provider_candidates(candidates);
         Err(EngineError::ModelMetadata(format!(
-            "Could not find ORT provider pair (libonnxruntime_providers_shared.so + {}). \
-Set ORT_DYLIB_PATH or ORT_LIB_LOCATION to that directory, then re-run scripts/test_ort_provider_load.sh.",
-            provider
+            "ORT provider directory resolution failed: command={command} mode={mode} ep_mode={ep_mode} provider={} \
+reason=no candidate directory contained required pair \
+(libonnxruntime_providers_shared.so + {}). \
+overrides={{ORT_DYLIB_PATH={}, ORT_LIB_LOCATION={}}}. \
+candidates_checked=[{}]. \
+Set ORT_DYLIB_PATH or ORT_LIB_LOCATION to a valid provider directory and re-run scripts/test_ort_provider_load.sh.",
+            kind.label(),
+            provider,
+            render_path(ort_dylib_path),
+            render_path(ort_lib_location),
+            checked
         )))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn resolve_ort_provider_dir(kind: OrtProviderKind) -> Result<(PathBuf, &'static str)> {
+        let (ort_dylib_path, ort_lib_location, exe_dir, cache_dirs, on_wsl) =
+            Self::ort_provider_search_inputs();
+        let candidates = Self::provider_dir_candidates(
+            ort_dylib_path.clone(),
+            ort_lib_location.clone(),
+            exe_dir,
+            cache_dirs,
+            on_wsl,
+        );
+        let (dir, source) = Self::resolve_provider_dir(
+            kind,
+            &candidates,
+            ort_dylib_path.as_deref(),
+            ort_lib_location.as_deref(),
+            "backend_initialize",
+            "provider_preload",
+            kind.label(),
+        )?;
+        Self::configure_ort_loader_path(&dir);
+        Ok((dir, source))
     }
 
     #[cfg(target_os = "linux")]
@@ -1112,6 +1211,175 @@ mod pointer_audit_tests {
         let mismatch = TensorRtBackend::pointer_identity_mismatch(0x1000, 0x1111, 0x2000, 0x2000)
             .expect("mismatch should be reported");
         assert!(mismatch.contains("IO-bound input"));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod provider_resolution_tests {
+    use super::{OrtProviderKind, TensorRtBackend};
+    use std::env;
+    use std::fs::{self, File};
+    use std::path::{Path, PathBuf};
+    use std::process;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(prefix: &str) -> Self {
+            let unique = format!(
+                "rave_provider_resolution_{prefix}_{}_{}",
+                process::id(),
+                NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed)
+            );
+            let path = env::temp_dir().join(unique);
+            fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+
+        fn join(&self, suffix: &str) -> PathBuf {
+            self.path.join(suffix)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn write_provider_pair(dir: &Path, kind: OrtProviderKind) {
+        fs::create_dir_all(dir).expect("create provider dir");
+        File::create(dir.join("libonnxruntime_providers_shared.so")).expect("create shared lib");
+        File::create(dir.join(kind.soname())).expect("create provider lib");
+    }
+
+    #[test]
+    fn provider_dir_env_override_wins() {
+        let tmp = TempDir::new("env_override");
+        let override_dir = tmp.join("override");
+        let exe_dir = tmp.join("exe");
+        let cache_dir = tmp.join("cache");
+
+        write_provider_pair(&override_dir, OrtProviderKind::TensorRt);
+        write_provider_pair(&exe_dir, OrtProviderKind::TensorRt);
+        write_provider_pair(&cache_dir, OrtProviderKind::TensorRt);
+
+        let candidates = TensorRtBackend::provider_dir_candidates(
+            Some(override_dir.clone()),
+            None,
+            Some(exe_dir),
+            vec![cache_dir],
+            false,
+        );
+        let (resolved, source) = TensorRtBackend::resolve_provider_dir(
+            OrtProviderKind::TensorRt,
+            &candidates,
+            Some(&override_dir),
+            None,
+            "upscale",
+            "direct",
+            "tensorrt",
+        )
+        .expect("provider directory should resolve");
+
+        assert_eq!(resolved, override_dir);
+        assert_eq!(source, "ORT_DYLIB_PATH");
+    }
+
+    #[test]
+    fn provider_dir_fallback_order_uses_first_existing_candidate() {
+        let tmp = TempDir::new("fallback_order");
+        let exe_dir = tmp.join("exe");
+        let exe_deps_dir = exe_dir.join("deps");
+        let cache_dir = tmp.join("cache");
+
+        write_provider_pair(&exe_deps_dir, OrtProviderKind::Cuda);
+        write_provider_pair(&cache_dir, OrtProviderKind::Cuda);
+
+        let candidates = TensorRtBackend::provider_dir_candidates(
+            None,
+            None,
+            Some(exe_dir.clone()),
+            vec![cache_dir],
+            false,
+        );
+        let (resolved, source) = TensorRtBackend::resolve_provider_dir(
+            OrtProviderKind::Cuda,
+            &candidates,
+            None,
+            None,
+            "benchmark",
+            "provider_preload",
+            "cuda",
+        )
+        .expect("provider directory should resolve");
+
+        assert_eq!(resolved, exe_deps_dir);
+        assert_eq!(source, "exe_dir/deps");
+    }
+
+    #[test]
+    fn provider_dir_failure_reports_checked_candidates_in_order() {
+        let tmp = TempDir::new("failure_diagnostics");
+        let override_dir = tmp.join("missing_override");
+        let lib_dir = tmp.join("missing_lib");
+
+        let candidates = TensorRtBackend::provider_dir_candidates(
+            Some(override_dir.clone()),
+            Some(lib_dir.clone()),
+            None,
+            vec![],
+            false,
+        );
+        let err = TensorRtBackend::resolve_provider_dir(
+            OrtProviderKind::TensorRt,
+            &candidates,
+            Some(&override_dir),
+            Some(&lib_dir),
+            "validate",
+            "provider_preload",
+            "tensorrt",
+        )
+        .expect_err("resolution should fail");
+        let msg = err.to_string();
+
+        assert!(msg.contains("command=validate"));
+        assert!(msg.contains("mode=provider_preload"));
+        assert!(msg.contains("ep_mode=tensorrt"));
+        assert!(msg.contains("candidates_checked=[1:ORT_DYLIB_PATH:"));
+        let idx_override = msg
+            .find("1:ORT_DYLIB_PATH:")
+            .expect("missing ORT_DYLIB_PATH candidate");
+        let idx_lib = msg
+            .find("2:ORT_LIB_LOCATION:")
+            .expect("missing ORT_LIB_LOCATION candidate");
+        assert!(
+            idx_override < idx_lib,
+            "candidate order should be deterministic and preserve precedence"
+        );
+    }
+
+    #[test]
+    fn provider_candidate_rendering_is_deterministic() {
+        let candidates = vec![
+            (PathBuf::from("/tmp/a"), "ORT_DYLIB_PATH"),
+            (PathBuf::from("/tmp/b"), "ORT_LIB_LOCATION"),
+            (PathBuf::from("/tmp/c"), "exe_dir"),
+        ];
+
+        let rendered_a = TensorRtBackend::render_provider_candidates(&candidates);
+        let rendered_b = TensorRtBackend::render_provider_candidates(&candidates);
+
+        assert_eq!(rendered_a, rendered_b);
+        assert_eq!(
+            rendered_a,
+            "1:ORT_DYLIB_PATH:/tmp/a, 2:ORT_LIB_LOCATION:/tmp/b, 3:exe_dir:/tmp/c"
+        );
     }
 }
 
