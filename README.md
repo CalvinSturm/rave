@@ -59,6 +59,9 @@ Feature placement decision table:
 No-host-copies checklist:
 - `docs/no_host_copies.md`
 
+Unsafe-boundary audit checklist:
+- `docs/unsafe_audit.md`
+
 Stage graph integration API:
 - `rave-pipeline` exports `StageGraph`, `StageConfig`, `ProfilePreset`,
   `RunContract`, and `UpscalePipeline::run_graph(...)`.

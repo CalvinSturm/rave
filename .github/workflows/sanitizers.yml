@@ -1,0 +1,48 @@
+name: Sanitizers (Opt-In)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly Sunday run (UTC). This workflow is intentionally separate from
+    # main CI so sanitizer signal does not gate regular PR turnaround.
+    - cron: "0 7 * * 0"
+
+jobs:
+  asan-cpu-surfaces:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build deps (CPU-only target set)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            llvm \
+            pkg-config \
+            libavformat-dev \
+            libavcodec-dev \
+            libavutil-dev \
+            libswscale-dev
+
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Run AddressSanitizer tests (targeted scope)
+        # Coverage intentionally focuses on CPU-only/FFI-heavy surfaces that
+        # run without NVIDIA drivers (currently rave-ffmpeg unit tests).
+        # Intentionally skipped here: CUDA/NVDEC/NVENC/ORT EP runtime paths.
+        env:
+          RUSTFLAGS: -Zsanitizer=address -Cpanic=abort
+          RUSTDOCFLAGS: -Zsanitizer=address
+          ASAN_OPTIONS: detect_leaks=1,strict_string_checks=1,check_initialization_order=1
+          RUST_BACKTRACE: "1"
+        run: |
+          cargo test \
+            -Zbuild-std \
+            --target x86_64-unknown-linux-gnu \
+            -p rave-ffmpeg \
+            --lib
