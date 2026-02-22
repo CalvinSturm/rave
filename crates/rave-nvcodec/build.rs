@@ -37,9 +37,9 @@ fn find_linux_cuda_root() -> Option<PathBuf> {
     None
 }
 
-fn resolve_cuda_root() -> PathBuf {
+fn resolve_cuda_root() -> Option<PathBuf> {
     if let Ok(cuda_path) = env::var("CUDA_PATH") {
-        return PathBuf::from(cuda_path);
+        return Some(PathBuf::from(cuda_path));
     }
 
     if let Some(root) = find_linux_cuda_root() {
@@ -47,23 +47,32 @@ fn resolve_cuda_root() -> PathBuf {
             "cargo:warning=CUDA_PATH is unset; using discovered CUDA root at {}",
             root.display()
         );
-        return root;
+        return Some(root);
     }
 
-    panic!(
-        "CUDA_PATH env var must be set (e.g., C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.x) \
-or install CUDA under /usr/local/cuda(/cuda-*)"
-    );
+    None
 }
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(rave_nvcodec_stub)");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     println!("cargo:rerun-if-changed=build.rs");
 
     // ── CUDA Toolkit ────────────────────────────────────────────────────────
 
-    let cuda_root = resolve_cuda_root();
+    let Some(cuda_root) = resolve_cuda_root() else {
+        if cfg!(target_os = "linux") {
+            println!(
+                "cargo:warning=CUDA toolkit not found (CUDA_PATH unset and /usr/local/cuda* missing); building rave-nvcodec in stub mode"
+            );
+            println!("cargo:rustc-cfg=rave_nvcodec_stub");
+            return;
+        }
+        panic!(
+            "CUDA_PATH env var must be set (e.g., C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.x)"
+        );
+    };
 
     let cuda_lib_dir = if cfg!(target_os = "windows") {
         cuda_root.join("lib").join("x64")
