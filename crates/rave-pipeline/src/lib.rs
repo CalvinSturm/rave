@@ -9,7 +9,7 @@ pub use pipeline::{PipelineConfig, PipelineMetrics, UpscalePipeline};
 pub use stage_graph::{
     AuditItem, AuditLevel, BatchConfig, BlurConfig, BlurMode, EnhanceConfig, GRAPH_SCHEMA_VERSION,
     PipelineReport, PrecisionPolicyConfig, ProfilePreset, Rect, RunContract, StageConfig,
-    StageGraph, StageId, StageKind, StageTimingReport, SwapConfig,
+    StageGraph, StageId, StageKind, StageTimingReport, SwapConfig, validate_batch_config,
 };
 
 #[cfg(test)]

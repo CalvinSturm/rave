@@ -227,3 +227,75 @@ fn upscale_json_error_is_single_object_on_stdout() {
     assert_single_stdout_json(&output.stdout, "upscale", false);
     assert_stderr_has_progress_jsonl(&output.stderr, "upscale");
 }
+
+#[test]
+fn upscale_json_rejects_micro_batching_in_mock_mode() {
+    let dir = unique_temp_dir("upscale_batch_guard");
+    let input = dir.join("input.265");
+    let model = dir.join("model.onnx");
+    let output_path = dir.join("output.265");
+    let graph_path = dir.join("graph.json");
+    write_dummy_file(&input);
+    write_dummy_file(&model);
+    let graph = serde_json::json!({
+        "graph_schema_version": 1,
+        "stages": [{
+            "kind": "enhance",
+            "id": 1,
+            "config": {
+                "model_path": model,
+                "precision_policy": "fp16",
+                "batch_config": {
+                    "max_batch": 2,
+                    "latency_deadline_us": 8000
+                },
+                "scale": 2
+            }
+        }]
+    });
+    fs::write(
+        &graph_path,
+        serde_json::to_vec(&graph).expect("serialize graph"),
+    )
+    .expect("write graph");
+
+    let output = mock_command()
+        .args([
+            "upscale",
+            "--input",
+            input.to_str().expect("utf8 input"),
+            "--output",
+            output_path.to_str().expect("utf8 output"),
+            "--model",
+            model.to_str().expect("utf8 model"),
+            "--graph",
+            graph_path.to_str().expect("utf8 graph"),
+            "--json",
+            "--progress",
+            "jsonl",
+        ])
+        .output()
+        .expect("run mock rave upscale with unsupported batch config");
+
+    assert!(
+        !output.status.success(),
+        "mock upscale with max_batch=2 unexpectedly succeeded"
+    );
+    assert_single_stdout_json(&output.stdout, "upscale", false);
+    let stdout_s = String::from_utf8_lossy(&output.stdout);
+    let lines = nonempty_lines(&stdout_s);
+    let value: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("stdout JSON should parse");
+    let error = value
+        .get("error")
+        .and_then(|v| v.as_str())
+        .expect("error field must be present");
+    assert!(
+        error.contains("max_batch"),
+        "unexpected error message: {error}"
+    );
+    assert!(
+        error.contains("not implemented"),
+        "unexpected error message: {error}"
+    );
+}

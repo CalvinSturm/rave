@@ -814,6 +814,16 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
     ensure_required_paths(&args.shared)?;
 
     let resolved = resolve_input(&args.shared)?;
+    let use_graph_runtime = args.shared.graph.is_some() || args.shared.profile != ProfileArg::Dev;
+    let graph = if use_graph_runtime {
+        Some(load_stage_graph(
+            args.shared.graph.as_deref(),
+            Some(&args.shared.model),
+            args.shared.precision.as_deref(),
+        )?)
+    } else {
+        None
+    };
     if args.dry_run {
         if args.json {
             println!(
@@ -853,8 +863,8 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
         return run_upscale_mock(args, resolved).await;
     }
 
-    if args.shared.graph.is_some() || args.shared.profile != ProfileArg::Dev {
-        return run_upscale_with_graph(args).await;
+    if let Some(graph) = graph {
+        return run_upscale_with_graph(args, resolved, graph).await;
     }
 
     let wall_start = Instant::now();
@@ -1013,15 +1023,13 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_upscale_with_graph(args: UpscaleArgs) -> Result<()> {
+async fn run_upscale_with_graph(
+    args: UpscaleArgs,
+    resolved: ResolvedInput,
+    graph: StageGraph,
+) -> Result<()> {
     let wall_start = Instant::now();
-    let resolved = resolve_input(&args.shared)?;
     let profile = profile_to_preset(args.shared.profile);
-    let graph = load_stage_graph(
-        args.shared.graph.as_deref(),
-        Some(&args.shared.model),
-        args.shared.precision.as_deref(),
-    )?;
 
     let device = args.shared.device.unwrap_or(0) as usize;
     let (ctx, kernels) = pipeline_create_context_and_kernels(

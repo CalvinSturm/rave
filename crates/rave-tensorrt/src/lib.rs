@@ -2,4 +2,4 @@
 
 pub mod tensorrt;
 
-pub use tensorrt::{BatchConfig, TensorRtBackend};
+pub use tensorrt::{BatchConfig, TensorRtBackend, validate_batch_config};

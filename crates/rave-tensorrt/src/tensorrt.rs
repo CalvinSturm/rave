@@ -160,6 +160,15 @@ impl Default for BatchConfig {
         }
     }
 }
+
+pub fn validate_batch_config(cfg: &BatchConfig) -> Result<()> {
+    if cfg.max_batch > 1 {
+        return Err(EngineError::InvariantViolation(
+            "micro-batching is not implemented; max_batch must be 1 (set max_batch=1)".into(),
+        ));
+    }
+    Ok(())
+}
 // ─── Inference metrics ───────────────────────────────────────────────────────
 
 /// Atomic counters for inference stage observability.
@@ -1157,6 +1166,8 @@ impl UpscaleBackend for TensorRtBackend {
             return Err(EngineError::ModelMetadata("Already initialized".into()));
         }
 
+        validate_batch_config(&self.batch_config)?;
+
         let ep_mode = Self::ort_ep_mode();
         let on_wsl = Self::is_wsl2();
         info!(
@@ -1353,6 +1364,32 @@ impl UpscaleBackend for TensorRtBackend {
 
     fn metadata(&self) -> Result<&ModelMetadata> {
         self.meta.get().ok_or(EngineError::NotInitialized)
+    }
+}
+
+#[cfg(test)]
+mod batch_config_tests {
+    use super::{BatchConfig, validate_batch_config};
+
+    #[test]
+    fn batch_config_validator_accepts_single_frame() {
+        let cfg = BatchConfig {
+            max_batch: 1,
+            latency_deadline_us: 8_000,
+        };
+        validate_batch_config(&cfg).expect("max_batch=1 should be accepted");
+    }
+
+    #[test]
+    fn batch_config_validator_rejects_micro_batching() {
+        let cfg = BatchConfig {
+            max_batch: 2,
+            latency_deadline_us: 8_000,
+        };
+        let err = validate_batch_config(&cfg).expect_err("max_batch>1 must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("max_batch"));
+        assert!(msg.contains("not implemented"));
     }
 }
 

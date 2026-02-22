@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use rave_core::error::{EngineError, Result};
 use rave_cuda::kernels::ModelPrecision;
-use rave_tensorrt::tensorrt::PrecisionPolicy;
+use rave_tensorrt::tensorrt::{
+    PrecisionPolicy, validate_batch_config as validate_tensorrt_batch_config,
+};
 
 pub const GRAPH_SCHEMA_VERSION: u32 = 1;
 
@@ -117,6 +119,11 @@ impl BatchConfig {
             latency_deadline_us: self.latency_deadline_us,
         }
     }
+}
+
+pub fn validate_batch_config(cfg: &BatchConfig) -> Result<()> {
+    let backend_cfg = cfg.to_tensorrt();
+    validate_tensorrt_batch_config(&backend_cfg)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -309,6 +316,7 @@ impl StageGraph {
                             StageKind::Enhance
                         )));
                     }
+                    validate_batch_config(&config.batch_config)?;
                 }
                 StageConfig::FaceSwapAndEnhance { .. } => {
                     swap_count += 1;
@@ -488,6 +496,26 @@ mod tests {
             ],
         };
         graph.validate().expect("graph should be valid");
+    }
+
+    #[test]
+    fn graph_validation_rejects_micro_batching() {
+        let mut stage = enhance_stage(1);
+        let StageConfig::Enhance { config, .. } = &mut stage else {
+            panic!("expected enhance stage");
+        };
+        config.batch_config.max_batch = 2;
+
+        let graph = StageGraph {
+            graph_schema_version: GRAPH_SCHEMA_VERSION,
+            stages: vec![stage],
+        };
+        let err = graph
+            .validate()
+            .expect_err("micro-batching must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("max_batch"));
+        assert!(msg.contains("not implemented"));
     }
 
     #[test]
