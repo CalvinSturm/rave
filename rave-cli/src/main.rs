@@ -486,6 +486,9 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 fn maybe_reexec_with_ort_ld_library_path() {
+    if mock_run_enabled() {
+        return;
+    }
     let mut args = std::env::args();
     let _bin = args.next();
     let sub = args.next().unwrap_or_default().to_ascii_lowercase();
@@ -846,6 +849,10 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
         return Ok(());
     }
 
+    if mock_run_enabled() {
+        return run_upscale_mock(args, resolved).await;
+    }
+
     if args.shared.graph.is_some() || args.shared.profile != ProfileArg::Dev {
         return run_upscale_with_graph(args).await;
     }
@@ -947,6 +954,10 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
         };
         emit_benchmark_output(&summary, args.json_out.as_deref(), emit_json_stdout)?;
         return Ok(());
+    }
+
+    if mock_run_enabled() {
+        return run_benchmark_mock(args, emit_json_stdout).await;
     }
 
     let setup = match prepare_runtime(&args.shared, resolved).await {
@@ -1072,6 +1083,109 @@ async fn run_upscale_with_graph(args: UpscaleArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn run_upscale_mock(args: UpscaleArgs, resolved: ResolvedInput) -> Result<()> {
+    let progress_mode = resolve_progress_mode(args.progress, args.jsonl);
+    emit_progress_line(
+        "upscale",
+        progress_mode,
+        Duration::from_millis(0),
+        ProgressSnapshot {
+            decoded: 0,
+            inferred: 0,
+            encoded: 0,
+        },
+        false,
+    );
+    emit_progress_line(
+        "upscale",
+        progress_mode,
+        Duration::from_millis(5),
+        ProgressSnapshot {
+            decoded: 4,
+            inferred: 4,
+            encoded: 4,
+        },
+        true,
+    );
+
+    if mock_fail_enabled() {
+        return Err(EngineError::Pipeline(
+            "mock failure: upscale command".into(),
+        ));
+    }
+
+    if args.json {
+        println!(
+            "{}",
+            upscale_json(
+                false,
+                &args.shared.input,
+                &args.output,
+                &args.shared.model,
+                resolved.codec,
+                resolved.width,
+                resolved.height,
+                resolved.fps_num,
+                resolved.fps_den,
+                12.5,
+                0,
+                0,
+            )
+        );
+    } else {
+        println!(
+            "upscale: ok output={} elapsed_s={:.3} vram_peak_mb={}",
+            args.output.display(),
+            0.013,
+            0
+        );
+    }
+
+    Ok(())
+}
+
+async fn run_benchmark_mock(args: BenchmarkArgs, emit_json_stdout: bool) -> Result<()> {
+    let progress_mode = resolve_progress_mode(args.progress, args.jsonl);
+    emit_progress_line(
+        "benchmark",
+        progress_mode,
+        Duration::from_millis(0),
+        ProgressSnapshot {
+            decoded: 0,
+            inferred: 0,
+            encoded: 0,
+        },
+        false,
+    );
+    emit_progress_line(
+        "benchmark",
+        progress_mode,
+        Duration::from_millis(5),
+        ProgressSnapshot {
+            decoded: 8,
+            inferred: 8,
+            encoded: if args.skip_encode { 0 } else { 8 },
+        },
+        true,
+    );
+
+    if mock_fail_enabled() {
+        return Err(EngineError::Pipeline(
+            "mock failure: benchmark command".into(),
+        ));
+    }
+
+    let summary = BenchmarkSummary {
+        fps: 240.0,
+        frames: 8,
+        elapsed_ms: 33.333,
+        decode_avg_us: 250.0,
+        infer_avg_us: 1800.0,
+        encode_avg_us: if args.skip_encode { None } else { Some(400.0) },
+    };
+    emit_benchmark_output(&summary, args.json_out.as_deref(), emit_json_stdout)
 }
 
 #[derive(Debug)]
@@ -1228,6 +1342,14 @@ fn env_flag_enabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn mock_run_enabled() -> bool {
+    env_flag_enabled("RAVE_MOCK_RUN")
+}
+
+fn mock_fail_enabled() -> bool {
+    env_flag_enabled("RAVE_MOCK_FAIL")
+}
+
 const DEFAULT_VALIDATE_MODEL_RELATIVE: &str = "tests/assets/models/resize2x_rgb.onnx";
 
 fn default_validate_model_path() -> PathBuf {
@@ -1328,6 +1450,10 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
         },
         false,
     );
+
+    if mock_run_enabled() {
+        return run_validate_mock(args, progress_mode).await;
+    }
 
     let fixture = args
         .fixture
@@ -1621,6 +1747,52 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
     Ok(())
 }
 
+async fn run_validate_mock(args: ValidateArgs, progress_mode: ProgressMode) -> Result<()> {
+    let runs = if matches!(args.profile, ProfileArg::ProductionStrict) {
+        args.determinism_runs.max(1)
+    } else {
+        1
+    };
+
+    emit_progress_line(
+        "validate",
+        progress_mode,
+        Duration::from_millis(5),
+        ProgressSnapshot {
+            decoded: 2,
+            inferred: 2,
+            encoded: 2,
+        },
+        true,
+    );
+
+    if mock_fail_enabled() {
+        return Err(EngineError::Pipeline(
+            "mock failure: validate command".into(),
+        ));
+    }
+
+    let summary = ValidateSummary {
+        ok: true,
+        skipped: false,
+        profile: args.profile,
+        model_path: args.model.as_ref().map(|p| p.display().to_string()),
+        runs,
+        determinism_equal: Some(true),
+        max_infer_us: 1800.0,
+        peak_vram_mb: 0,
+        frames_decoded: 2,
+        frames_encoded: 2,
+        warnings: vec![],
+    };
+    if args.json {
+        println!("{}", summary.to_json());
+    } else {
+        println!("{}", summary.to_human());
+    }
+    Ok(())
+}
+
 async fn run_benchmark_once(
     setup: &RuntimeSetup,
     args: &BenchmarkArgs,
@@ -1856,6 +2028,7 @@ fn spawn_progress_reporter(
 
     let notify = Arc::new(tokio::sync::Notify::new());
     let notify_task = notify.clone();
+    let tick = progress_tick_duration();
     let handle = tokio::spawn(async move {
         let start = Instant::now();
         let mut last = current_progress_snapshot(&metrics);
@@ -1866,7 +2039,7 @@ fn spawn_progress_reporter(
                     emit_progress_line(command, mode, start.elapsed(), snapshot, true);
                     break;
                 }
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                _ = tokio::time::sleep(tick) => {
                     let snapshot = current_progress_snapshot(&metrics);
                     if snapshot != last {
                         emit_progress_line(command, mode, start.elapsed(), snapshot, false);
@@ -1878,6 +2051,15 @@ fn spawn_progress_reporter(
     });
 
     Some(ProgressReporter { notify, handle })
+}
+
+fn progress_tick_duration() -> Duration {
+    let ms = std::env::var("RAVE_PROGRESS_TICK_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(1000);
+    Duration::from_millis(ms)
 }
 
 fn avg_us(total_us: u64, count: u64) -> f64 {
