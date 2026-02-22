@@ -473,6 +473,13 @@ enum OrtProviderKind {
     TensorRt,
 }
 
+#[cfg(not(target_os = "linux"))]
+#[derive(Clone, Copy)]
+enum OrtProviderKind {
+    Cuda,
+    TensorRt,
+}
+
 #[cfg(target_os = "linux")]
 type ProviderCandidate = (PathBuf, &'static str);
 
@@ -485,6 +492,16 @@ impl OrtProviderKind {
         }
     }
 
+    fn label(self) -> &'static str {
+        match self {
+            OrtProviderKind::Cuda => "providers_cuda",
+            OrtProviderKind::TensorRt => "providers_tensorrt",
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl OrtProviderKind {
     fn label(self) -> &'static str {
         match self {
             OrtProviderKind::Cuda => "providers_cuda",
@@ -1000,6 +1017,11 @@ Ensure ORT_DYLIB_PATH/ORT_LIB_LOCATION points to a valid ORT cache dir.",
             path = %provider.display(),
             "ORT provider pair prepared (providers_shared preloaded, provider path configured)"
         );
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn preload_ort_provider_pair(_kind: OrtProviderKind) -> Result<()> {
         Ok(())
     }
 
