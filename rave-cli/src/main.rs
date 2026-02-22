@@ -872,6 +872,7 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
             model_precision: setup.precision,
             enable_profiler: true,
             strict_no_host_copies: matches!(args.shared.profile, ProfileArg::ProductionStrict),
+            strict_invariants: matches!(args.shared.profile, ProfileArg::ProductionStrict),
         },
     );
     let progress_mode = resolve_progress_mode(args.progress, args.jsonl);
@@ -1027,6 +1028,7 @@ async fn run_upscale_with_graph(args: UpscaleArgs) -> Result<()> {
             )?,
             enable_profiler: true,
             strict_no_host_copies: false,
+            strict_invariants: matches!(args.shared.profile, ProfileArg::ProductionStrict),
         },
     );
 
@@ -1454,6 +1456,7 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
             model_precision: pipeline_parse_precision("fp16")?,
             enable_profiler: true,
             strict_no_host_copies: false,
+            strict_invariants: matches!(profile_arg, ProfileArg::ProductionStrict),
         },
     );
 
@@ -1643,6 +1646,7 @@ Run with: LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda-12/targets/x86_64-lin
             model_precision: setup.precision,
             enable_profiler: true,
             strict_no_host_copies: false,
+            strict_invariants: matches!(args.shared.profile, ProfileArg::ProductionStrict),
         },
     );
     let metrics = pipeline.metrics();

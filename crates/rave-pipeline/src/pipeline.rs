@@ -123,6 +123,15 @@ impl PipelineMetrics {
         d >= p && p >= i && i >= e
     }
 
+    fn ordering_counts(&self) -> (u64, u64, u64, u64) {
+        (
+            self.frames_decoded.load(Ordering::Acquire),
+            self.frames_preprocessed.load(Ordering::Acquire),
+            self.frames_inferred.load(Ordering::Acquire),
+            self.frames_encoded.load(Ordering::Acquire),
+        )
+    }
+
     /// Report stage latencies (avg microseconds).
     pub fn report(&self) {
         let dec = self.frames_decoded.load(Ordering::Relaxed);
@@ -149,6 +158,18 @@ impl PipelineMetrics {
     }
 }
 
+fn enforce_metrics_invariants(metrics: &PipelineMetrics, strict: bool) -> Result<()> {
+    if !strict || metrics.validate() {
+        return Ok(());
+    }
+
+    let (decoded, preprocessed, inferred, encoded) = metrics.ordering_counts();
+    Err(EngineError::InvariantViolation(format!(
+        "Pipeline ordering violation: decoded={decoded} preprocessed={preprocessed} \
+         inferred={inferred} encoded={encoded}"
+    )))
+}
+
 // ─── Pipeline config ────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -170,6 +191,11 @@ pub struct PipelineConfig {
     /// Requires feature `audit-no-host-copies` to be enabled on this crate.
     /// Defaults to `false` so normal runs are unaffected.
     pub strict_no_host_copies: bool,
+    /// Promote metrics monotonicity violations into a hard error at shutdown.
+    ///
+    /// Defaults to `false` so release behavior remains unchanged unless
+    /// explicitly enabled (for example via `production_strict` profile wiring).
+    pub strict_invariants: bool,
 }
 
 impl Default for PipelineConfig {
@@ -182,6 +208,7 @@ impl Default for PipelineConfig {
             model_precision: ModelPrecision::F32,
             enable_profiler: true,
             strict_no_host_copies: false,
+            strict_invariants: false,
         }
     }
 }
@@ -394,14 +421,18 @@ impl UpscalePipeline {
         }
 
         // Validate ordering invariants.
+        let (decoded, preprocessed, inferred, encoded) = metrics.ordering_counts();
         debug_assert!(
-            metrics.validate(),
+            decoded >= preprocessed && preprocessed >= inferred && inferred >= encoded,
             "Pipeline ordering violation: decoded={} preprocessed={} inferred={} encoded={}",
-            metrics.frames_decoded.load(Ordering::Acquire),
-            metrics.frames_preprocessed.load(Ordering::Acquire),
-            metrics.frames_inferred.load(Ordering::Acquire),
-            metrics.frames_encoded.load(Ordering::Acquire),
+            decoded,
+            preprocessed,
+            inferred,
+            encoded,
         );
+        if first_error.is_none() {
+            enforce_metrics_invariants(&metrics, self.config.strict_invariants)?;
+        }
 
         let (vram_current, vram_peak) = ctx.vram_usage();
         info!(
@@ -490,6 +521,7 @@ impl UpscalePipeline {
         let mut cfg = self.config.clone();
         cfg.model_precision = enhance_config.precision_policy.as_model_precision();
         cfg.strict_no_host_copies = profile.strict_no_host_copies();
+        cfg.strict_invariants = matches!(profile, ProfilePreset::ProductionStrict);
         cfg.encoder_nv12_pitch = nv12_pitch;
 
         let pipeline = UpscalePipeline::new(self.ctx.clone(), self.kernels.clone(), cfg.clone());
@@ -782,6 +814,45 @@ impl UpscalePipeline {
 
         info!(?report, "Stress test passed");
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PipelineMetrics, enforce_metrics_invariants};
+    use rave_core::error::EngineError;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn strict_invariants_fail_on_monotonicity_violation() {
+        let metrics = PipelineMetrics::new();
+        metrics.frames_decoded.store(10, Ordering::Release);
+        metrics.frames_preprocessed.store(11, Ordering::Release);
+        metrics.frames_inferred.store(9, Ordering::Release);
+        metrics.frames_encoded.store(9, Ordering::Release);
+
+        let err = enforce_metrics_invariants(&metrics, true).expect_err("expected strict failure");
+        match err {
+            EngineError::InvariantViolation(msg) => {
+                assert!(msg.contains("decoded=10"));
+                assert!(msg.contains("preprocessed=11"));
+                assert!(msg.contains("inferred=9"));
+                assert!(msg.contains("encoded=9"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_invariants_do_not_fail_release_path() {
+        let metrics = PipelineMetrics::new();
+        metrics.frames_decoded.store(1, Ordering::Release);
+        metrics.frames_preprocessed.store(2, Ordering::Release);
+        metrics.frames_inferred.store(3, Ordering::Release);
+        metrics.frames_encoded.store(4, Ordering::Release);
+
+        enforce_metrics_invariants(&metrics, false)
+            .expect("default mode should not hard-fail invariant violations");
     }
 }
 
