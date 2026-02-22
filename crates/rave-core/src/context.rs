@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 
 use cudarc::driver::{CudaDevice, CudaSlice, CudaStream, DeviceSlice};
 use tracing::{info, warn};
@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use crate::error::{EngineError, Result};
 use crate::ffi_types::{CUDA_SUCCESS, CUresult, CUstream};
 
-#[cfg_attr(target_os = "linux", link(name = "cuda"))]
+#[cfg(not(target_os = "linux"))]
 unsafe extern "C" {
     fn cuInit(flags: u32) -> CUresult;
     fn cuDriverGetVersion(driver_version: *mut i32) -> CUresult;
@@ -53,6 +53,85 @@ struct DlInfo {
 }
 
 static CUDA_INIT_DIAG_ONCE: Once = Once::new();
+
+#[cfg(target_os = "linux")]
+struct CudaDriverSymbols {
+    cu_init: unsafe extern "C" fn(u32) -> CUresult,
+    cu_driver_get_version: unsafe extern "C" fn(*mut i32) -> CUresult,
+    cu_device_get_count: unsafe extern "C" fn(*mut i32) -> CUresult,
+    cu_stream_synchronize: unsafe extern "C" fn(CUstream) -> CUresult,
+    cu_init_addr: usize,
+}
+
+#[cfg(target_os = "linux")]
+static CUDA_DRIVER_SYMBOLS: OnceLock<std::result::Result<CudaDriverSymbols, String>> =
+    OnceLock::new();
+
+#[cfg(target_os = "linux")]
+fn load_cuda_symbol<T>(handle: *mut c_void, name: &'static str) -> std::result::Result<T, String> {
+    let cname = CString::new(name).map_err(|_| format!("invalid CUDA symbol name: {name}"))?;
+    // SAFETY: handle is a dlopen handle and cname is a valid NUL-terminated symbol name.
+    let ptr = unsafe { dlsym(handle, cname.as_ptr()) };
+    if ptr.is_null() {
+        let err = unsafe {
+            let p = dlerror();
+            if p.is_null() {
+                "unknown dlsym error".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().to_string()
+            }
+        };
+        Err(format!("dlsym({name}) failed: {err}"))
+    } else {
+        // SAFETY: ptr points to a function symbol with signature T.
+        Ok(unsafe { std::mem::transmute_copy(&ptr) })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn init_cuda_driver_symbols() -> std::result::Result<CudaDriverSymbols, String> {
+    let mut handle = std::ptr::null_mut();
+    let mut last_err = "unknown dlopen error".to_string();
+    for candidate in ["libcuda.so.1", "libcuda.so"] {
+        let soname =
+            CString::new(candidate).map_err(|_| format!("invalid CUDA soname: {candidate}"))?;
+        // SAFETY: static soname and valid flags.
+        handle = unsafe { dlopen(soname.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
+        if !handle.is_null() {
+            break;
+        }
+        last_err = unsafe {
+            let p = dlerror();
+            if p.is_null() {
+                "unknown dlopen error".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().to_string()
+            }
+        };
+    }
+
+    if handle.is_null() {
+        return Err(format!(
+            "dlopen(libcuda.so.1|libcuda.so) failed: {last_err}"
+        ));
+    }
+
+    let cu_init = load_cuda_symbol(handle, "cuInit")?;
+    let cu_driver_get_version = load_cuda_symbol(handle, "cuDriverGetVersion")?;
+    let cu_device_get_count = load_cuda_symbol(handle, "cuDeviceGetCount")?;
+    let cu_stream_synchronize = load_cuda_symbol(handle, "cuStreamSynchronize")?;
+    let cu_init_addr = {
+        let fptr: unsafe extern "C" fn(u32) -> CUresult = cu_init;
+        fptr as usize
+    };
+    Ok(CudaDriverSymbols {
+        cu_init,
+        cu_driver_get_version,
+        cu_device_get_count,
+        cu_stream_synchronize,
+        cu_init_addr,
+    })
+}
 
 /// Hardware-preferred alignment for tensor buffers (512 B — matches
 /// NVIDIA L2 cache line and warp-coalesced access granularity).
@@ -140,6 +219,70 @@ pub struct GpuContext {
 
 impl GpuContext {
     #[cfg(target_os = "linux")]
+    fn cuda_driver_symbols() -> Result<&'static CudaDriverSymbols> {
+        let symbols = CUDA_DRIVER_SYMBOLS.get_or_init(init_cuda_driver_symbols);
+        symbols.as_ref().map_err(|err| {
+            EngineError::Pipeline(format!(
+                "failed to load CUDA driver symbols: {err}. \
+Ensure NVIDIA driver libraries are installed and visible via LD_LIBRARY_PATH \
+(on WSL, prepend /usr/lib/wsl/lib)."
+            ))
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cu_init(flags: u32) -> Result<CUresult> {
+        let symbols = Self::cuda_driver_symbols()?;
+        // SAFETY: symbol resolved from libcuda with matching signature.
+        Ok(unsafe { (symbols.cu_init)(flags) })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn cu_init(flags: u32) -> Result<CUresult> {
+        // SAFETY: FFI call into CUDA driver API.
+        Ok(unsafe { cuInit(flags) })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cu_driver_get_version(driver_version: &mut i32) -> Result<CUresult> {
+        let symbols = Self::cuda_driver_symbols()?;
+        // SAFETY: symbol resolved from libcuda with matching signature.
+        Ok(unsafe { (symbols.cu_driver_get_version)(driver_version as *mut i32) })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn cu_driver_get_version(driver_version: &mut i32) -> Result<CUresult> {
+        // SAFETY: FFI call into CUDA driver API.
+        Ok(unsafe { cuDriverGetVersion(driver_version as *mut i32) })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cu_device_get_count(count: &mut i32) -> Result<CUresult> {
+        let symbols = Self::cuda_driver_symbols()?;
+        // SAFETY: symbol resolved from libcuda with matching signature.
+        Ok(unsafe { (symbols.cu_device_get_count)(count as *mut i32) })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn cu_device_get_count(count: &mut i32) -> Result<CUresult> {
+        // SAFETY: FFI call into CUDA driver API.
+        Ok(unsafe { cuDeviceGetCount(count as *mut i32) })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cu_stream_synchronize(stream: CUstream) -> Result<CUresult> {
+        let symbols = Self::cuda_driver_symbols()?;
+        // SAFETY: symbol resolved from libcuda with matching signature.
+        Ok(unsafe { (symbols.cu_stream_synchronize)(stream) })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn cu_stream_synchronize(stream: CUstream) -> Result<CUresult> {
+        // SAFETY: FFI call into CUDA driver API.
+        Ok(unsafe { cuStreamSynchronize(stream) })
+    }
+
+    #[cfg(target_os = "linux")]
     fn is_wsl2() -> bool {
         std::fs::read_to_string("/proc/sys/kernel/osrelease")
             .map(|s| s.to_ascii_lowercase().contains("microsoft"))
@@ -172,14 +315,15 @@ impl GpuContext {
 
     #[cfg(target_os = "linux")]
     fn libcuda_path_from_dladdr() -> Option<String> {
+        let cu_init_addr = Self::cuda_driver_symbols().ok()?.cu_init_addr as *const c_void;
         let mut info = DlInfo {
             dli_fname: std::ptr::null(),
             dli_fbase: std::ptr::null_mut(),
             dli_sname: std::ptr::null(),
             dli_saddr: std::ptr::null_mut(),
         };
-        // SAFETY: passing function pointer address and valid DlInfo out pointer.
-        let rc = unsafe { dladdr(cuInit as *const c_void, &mut info as *mut DlInfo) };
+        // SAFETY: passing symbol pointer address and valid DlInfo out pointer.
+        let rc = unsafe { dladdr(cu_init_addr, &mut info as *mut DlInfo) };
         if rc == 0 || info.dli_fname.is_null() {
             None
         } else {
@@ -302,7 +446,7 @@ WSL requires NVIDIA driver libs from /usr/lib/wsl/lib."
             return Ok(());
         }
 
-        let rc = unsafe { cuInit(0) };
+        let rc = Self::cu_init(0)?;
         if rc == CUDA_SUCCESS {
             return Ok(());
         }
@@ -314,7 +458,7 @@ WSL requires NVIDIA driver libs from /usr/lib/wsl/lib."
         }
 
         let nvml_preinit = Self::try_nvml_preinit_for_wsl();
-        let rc_retry = unsafe { cuInit(0) };
+        let rc_retry = Self::cu_init(0)?;
         if rc_retry == CUDA_SUCCESS {
             warn!(
                 nvml_preinit = ?nvml_preinit.as_ref().map(|_| "ok"),
@@ -350,10 +494,28 @@ This is typically a WSL/Windows NVIDIA driver issue. Run scripts/wsl_gpu_healthc
     fn log_cuda_init_diagnostics_once() {
         CUDA_INIT_DIAG_ONCE.call_once(|| {
             let mut driver_version = -1i32;
-            let rc_driver = unsafe { cuDriverGetVersion(&mut driver_version as *mut i32) };
+            let rc_driver = match Self::cu_driver_get_version(&mut driver_version) {
+                Ok(rc) => rc,
+                Err(err) => {
+                    warn!(error = %err, "CUDA diagnostics could not query driver version");
+                    -1
+                }
+            };
             let mut device_count = -1i32;
-            let rc_count = unsafe { cuDeviceGetCount(&mut device_count as *mut i32) };
-            let rc_init = unsafe { cuInit(0) };
+            let rc_count = match Self::cu_device_get_count(&mut device_count) {
+                Ok(rc) => rc,
+                Err(err) => {
+                    warn!(error = %err, "CUDA diagnostics could not query device count");
+                    -1
+                }
+            };
+            let rc_init = match Self::cu_init(0) {
+                Ok(rc) => rc,
+                Err(err) => {
+                    warn!(error = %err, "CUDA diagnostics could not call cuInit");
+                    -1
+                }
+            };
             #[cfg(target_os = "linux")]
             let libcuda_path = Self::loaded_libcuda_path();
             #[cfg(target_os = "linux")]
@@ -586,7 +748,7 @@ Use WSL NVIDIA driver libcuda instead: export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$
     /// Synchronize a specific stream, blocking until all enqueued work completes.
     pub fn sync_stream(stream: &CudaStream) -> Result<()> {
         let raw = stream.stream as CUstream;
-        let rc = unsafe { cuStreamSynchronize(raw) };
+        let rc = Self::cu_stream_synchronize(raw)?;
         if rc == CUDA_SUCCESS {
             Ok(())
         } else {
