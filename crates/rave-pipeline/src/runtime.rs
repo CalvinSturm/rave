@@ -57,6 +57,7 @@ pub struct RuntimeRequest {
     pub precision: String,
     pub device: usize,
     pub vram_limit_mib: Option<usize>,
+    pub strict_vram_limit: bool,
     pub decode_cap: Option<usize>,
     pub preprocess_cap: Option<usize>,
     pub upscale_cap: Option<usize>,
@@ -131,6 +132,9 @@ pub async fn prepare_runtime(request: &RuntimeRequest) -> Result<RuntimeSetup> {
     let precision = parse_precision(&request.precision)?;
 
     let ctx = GpuContext::new(request.device)?;
+    if request.strict_vram_limit {
+        ctx.set_strict_vram_limit(true);
+    }
     if let Some(vram_limit_mib) = request.vram_limit_mib
         && vram_limit_mib > 0
     {
@@ -175,8 +179,12 @@ pub async fn prepare_runtime(request: &RuntimeRequest) -> Result<RuntimeSetup> {
 pub fn create_context_and_kernels(
     device: usize,
     vram_limit_mib: Option<usize>,
+    strict_vram_limit: bool,
 ) -> Result<(Arc<GpuContext>, Arc<PreprocessKernels>)> {
     let ctx = GpuContext::new(device)?;
+    if strict_vram_limit {
+        ctx.set_strict_vram_limit(true);
+    }
     if let Some(vram_limit_mib) = vram_limit_mib
         && vram_limit_mib > 0
     {

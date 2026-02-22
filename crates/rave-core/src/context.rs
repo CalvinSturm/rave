@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, Once};
 use cudarc::driver::{CudaDevice, CudaSlice, CudaStream, DeviceSlice};
 use tracing::{info, warn};
 
-use crate::error::Result;
+use crate::error::{EngineError, Result};
 use crate::ffi_types::{CUDA_SUCCESS, CUresult, CUstream};
 
 #[cfg_attr(target_os = "linux", link(name = "cuda"))]
@@ -133,6 +133,9 @@ pub struct GpuContext {
 
     /// VRAM limit (bytes). 0 = unlimited.
     vram_limit: AtomicUsize,
+
+    /// Enforce VRAM limit as a hard allocation error instead of warn-only.
+    strict_vram_limit: AtomicBool,
 }
 
 impl GpuContext {
@@ -433,6 +436,7 @@ Use WSL NVIDIA driver libcuda instead: export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$
             profiler: PerfProfiler::new(),
             queue_depth: QueueDepthTracker::new(),
             vram_limit: AtomicUsize::new(0),
+            strict_vram_limit: AtomicBool::new(false),
         }))
     }
 
@@ -457,6 +461,17 @@ Use WSL NVIDIA driver libcuda instead: export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$
 
         // Pool miss — allocate from driver at bucket-aligned size.
         self.pool_stats.misses.fetch_add(1, Ordering::Relaxed);
+        let (current_before, _) = self.vram.snapshot();
+        let would_exceed = check_vram_limit(
+            self.strict_vram_limit.load(Ordering::Relaxed),
+            match self.vram_limit.load(Ordering::Relaxed) {
+                0 => None,
+                limit => Some(limit),
+            },
+            current_before,
+            size,
+            bucket_size,
+        )?;
         let buf = self.device.alloc_zeros::<u8>(bucket_size)?;
         self.vram.on_alloc(bucket_size);
 
@@ -467,17 +482,17 @@ Use WSL NVIDIA driver libcuda instead: export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$
             );
         }
 
-        // VRAM limit enforcement.
-        let limit = self.vram_limit.load(Ordering::Relaxed);
-        if limit > 0 {
-            let (current, _) = self.vram.snapshot();
-            if current > limit {
-                warn!(
-                    current_mb = current / (1024 * 1024),
-                    limit_mb = limit / (1024 * 1024),
-                    "VRAM usage exceeds configured limit"
-                );
-            }
+        if would_exceed {
+            let limit = self.vram_limit.load(Ordering::Relaxed);
+            let would_be = current_before.saturating_add(bucket_size);
+            warn!(
+                current_mb = current_before / (1024 * 1024),
+                would_be_mb = would_be / (1024 * 1024),
+                limit_mb = limit / (1024 * 1024),
+                requested_bytes = size,
+                reserved_bytes = bucket_size,
+                "VRAM usage would exceed configured limit; continuing because strict_vram_limit=false"
+            );
         }
 
         Ok(buf)
@@ -534,6 +549,12 @@ Use WSL NVIDIA driver libcuda instead: export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$
     pub fn set_vram_limit(&self, limit_bytes: usize) {
         self.vram_limit.store(limit_bytes, Ordering::Relaxed);
         info!(limit_mb = limit_bytes / (1024 * 1024), "VRAM limit set");
+    }
+
+    /// Enable/disable hard-fail behavior when a configured VRAM limit would be exceeded.
+    pub fn set_strict_vram_limit(&self, enabled: bool) {
+        self.strict_vram_limit.store(enabled, Ordering::Relaxed);
+        info!(enabled, "Strict VRAM limit enforcement");
     }
 
     /// Capture a structured health snapshot for telemetry export.
@@ -840,6 +861,34 @@ fn bucket_for(size: usize) -> usize {
     }
 }
 
+fn check_vram_limit(
+    strict: bool,
+    limit: Option<usize>,
+    current: usize,
+    requested: usize,
+    reserve: usize,
+) -> Result<bool> {
+    let Some(limit_bytes) = limit.filter(|limit| *limit > 0) else {
+        return Ok(false);
+    };
+
+    let would_be = current.saturating_add(reserve);
+    if would_be <= limit_bytes {
+        return Ok(false);
+    }
+
+    if strict {
+        return Err(EngineError::VramLimitExceeded {
+            limit_bytes,
+            current_bytes: current,
+            requested_bytes: requested,
+            would_be_bytes: would_be,
+        });
+    }
+
+    Ok(true)
+}
+
 // ─── Queue Depth Tracking ───────────────────────────────────────────────────
 
 /// Lock-free queue depth counters for backpressure observability.
@@ -888,6 +937,7 @@ pub struct HealthSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::EngineError;
 
     #[test]
     fn bucket_sizing_small() {
@@ -910,5 +960,39 @@ mod tests {
     #[test]
     fn bucket_sizing_zero() {
         assert!(bucket_for(0) > 0);
+    }
+
+    #[test]
+    fn vram_limit_warn_only_mode_preserves_success() {
+        let ok = check_vram_limit(false, Some(1_024), 900, 200, 256)
+            .expect("warn-only mode should not fail");
+        assert!(ok, "helper should indicate would-exceed for caller warning");
+    }
+
+    #[test]
+    fn vram_limit_strict_mode_fails_when_exceeded() {
+        let err =
+            check_vram_limit(true, Some(1_024), 900, 200, 256).expect_err("strict mode must fail");
+        match err {
+            EngineError::VramLimitExceeded {
+                limit_bytes,
+                current_bytes,
+                requested_bytes,
+                would_be_bytes,
+            } => {
+                assert_eq!(limit_bytes, 1_024);
+                assert_eq!(current_bytes, 900);
+                assert_eq!(requested_bytes, 200);
+                assert_eq!(would_be_bytes, 1_156);
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vram_limit_strict_mode_allows_exact_boundary() {
+        let ok =
+            check_vram_limit(true, Some(1_024), 768, 128, 256).expect("equal-to-limit is allowed");
+        assert!(!ok, "no warning when boundary is exactly met");
     }
 }

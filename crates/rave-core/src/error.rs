@@ -83,8 +83,16 @@ pub enum EngineError {
         message: String,
     },
 
-    #[error("VRAM limit exceeded: current {current_mb} MiB > cap {limit_mb} MiB")]
-    VramLimitExceeded { current_mb: usize, limit_mb: usize },
+    #[error(
+        "VRAM limit exceeded: limit={limit_bytes}B current={current_bytes}B \
+         requested={requested_bytes}B would_be={would_be_bytes}B"
+    )]
+    VramLimitExceeded {
+        limit_bytes: usize,
+        current_bytes: usize,
+        requested_bytes: usize,
+        would_be_bytes: usize,
+    },
 
     #[error("Backpressure timeout: {stage} blocked for {elapsed_ms} ms")]
     BackpressureTimeout {

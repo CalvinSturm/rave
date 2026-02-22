@@ -1013,7 +1013,11 @@ async fn run_upscale_with_graph(args: UpscaleArgs) -> Result<()> {
     )?;
 
     let device = args.shared.device.unwrap_or(0) as usize;
-    let (ctx, kernels) = pipeline_create_context_and_kernels(device, args.shared.vram_limit)?;
+    let (ctx, kernels) = pipeline_create_context_and_kernels(
+        device,
+        args.shared.vram_limit,
+        matches!(args.shared.profile, ProfileArg::ProductionStrict),
+    )?;
 
     let pipeline = UpscalePipeline::new(
         ctx.clone(),
@@ -1430,7 +1434,11 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
         .and_then(|f| f.allow_hash_skipped)
         .unwrap_or(true);
 
-    let (ctx, kernels) = match pipeline_create_context_and_kernels(device, None) {
+    let (ctx, kernels) = match pipeline_create_context_and_kernels(
+        device,
+        None,
+        matches!(profile_arg, ProfileArg::ProductionStrict),
+    ) {
         Ok(resources) => resources,
         Err(err) if best_effort => {
             emit_validate_skip(
@@ -2112,6 +2120,7 @@ async fn prepare_runtime(shared: &SharedVideoArgs, input: ResolvedInput) -> Resu
             .unwrap_or_else(|| "fp32".to_string()),
         device,
         vram_limit_mib: shared.vram_limit,
+        strict_vram_limit: matches!(shared.profile, ProfileArg::ProductionStrict),
         decode_cap: shared.decode_cap,
         preprocess_cap: shared.preprocess_cap,
         upscale_cap: shared.upscale_cap,
