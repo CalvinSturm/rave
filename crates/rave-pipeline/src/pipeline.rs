@@ -65,6 +65,7 @@ use rave_core::codec_traits::{
 use rave_core::context::{GpuContext, PerfStage};
 use rave_core::error::{EngineError, Result};
 use rave_core::ffi_types::cudaVideoCodec;
+use rave_core::host_copy_audit::audit_device_texture;
 use rave_core::types::{FrameEnvelope, GpuTexture, PixelFormat};
 use rave_cuda::blur::{BlurRegion, FaceBlurConfig, FaceBlurEngine};
 use rave_cuda::kernels::{ModelPrecision, PreprocessKernels};
@@ -291,6 +292,7 @@ impl UpscalePipeline {
         let precision = self.config.model_precision;
         let metrics = self.metrics.clone();
         let enable_profiler = self.config.enable_profiler;
+        let strict_no_host_copies = self.config.strict_no_host_copies;
 
         let mut tasks = JoinSet::new();
 
@@ -306,6 +308,7 @@ impl UpscalePipeline {
                     &cancel,
                     &metrics,
                     &ctx_decode.queue_depth,
+                    strict_no_host_copies,
                 )
             });
         }
@@ -331,6 +334,7 @@ impl UpscalePipeline {
                     &cancel,
                     &metrics,
                     profiler_ctx.as_deref(),
+                    strict_no_host_copies,
                 )
                 .await
             });
@@ -360,6 +364,7 @@ impl UpscalePipeline {
                     &cancel,
                     &metrics,
                     profiler_ctx.as_deref(),
+                    strict_no_host_copies,
                 )
                 .await
             });
@@ -383,6 +388,7 @@ impl UpscalePipeline {
                     &cancel,
                     &metrics,
                     profiler_ctx.as_deref(),
+                    strict_no_host_copies,
                 )
             });
         }
@@ -1428,6 +1434,7 @@ fn decode_stage<D: FrameDecoder>(
     cancel: &CancellationToken,
     metrics: &PipelineMetrics,
     queue: &rave_core::context::QueueDepthTracker,
+    strict_no_host_copies: bool,
 ) -> Result<()> {
     loop {
         if cancel.is_cancelled() {
@@ -1438,6 +1445,11 @@ fn decode_stage<D: FrameDecoder>(
         match decoder.decode_next()? {
             Some(decoded) => {
                 debug_assert_eq!(decoded.envelope.texture.format, PixelFormat::Nv12);
+                audit_device_texture(
+                    "decode->preprocess",
+                    &decoded.envelope.texture,
+                    strict_no_host_copies,
+                )?;
                 queue.decode.fetch_add(1, Ordering::Relaxed);
                 if tx.blocking_send(decoded).is_err() {
                     debug!("Decode: downstream closed");
@@ -1479,6 +1491,7 @@ async fn preprocess_stage(
     cancel: &CancellationToken,
     metrics: &PipelineMetrics,
     profiler_ctx: Option<&GpuContext>,
+    strict_no_host_copies: bool,
 ) -> Result<()> {
     loop {
         let decoded = tokio::select! {
@@ -1521,6 +1534,11 @@ async fn preprocess_stage(
                 kernels.nv12_to_rgb_f16(&frame.texture, ctx, &ctx.preprocess_stream)?
             }
         };
+        audit_device_texture(
+            "preprocess->inference",
+            &model_texture,
+            strict_no_host_copies,
+        )?;
 
         // Stream sync before releasing NV12 buffer — ensures preprocess kernel completed.
         GpuContext::sync_stream(&ctx.preprocess_stream)?;
@@ -1583,6 +1601,7 @@ async fn inference_stage<B: UpscaleBackend>(
     cancel: &CancellationToken,
     metrics: &PipelineMetrics,
     profiler_ctx: Option<&GpuContext>,
+    strict_no_host_copies: bool,
 ) -> Result<()> {
     loop {
         if cancel.is_cancelled() {
@@ -1655,6 +1674,7 @@ async fn inference_stage<B: UpscaleBackend>(
                 });
             }
         };
+        audit_device_texture("inference->encode", &upscaled_nv12, strict_no_host_copies)?;
 
         GpuContext::sync_stream(&ctx.inference_stream)?;
         let post_us = t_post.elapsed().as_micros() as u64;
@@ -1698,6 +1718,7 @@ fn encode_stage<E: FrameEncoder>(
     cancel: &CancellationToken,
     metrics: &PipelineMetrics,
     profiler_ctx: Option<&GpuContext>,
+    strict_no_host_copies: bool,
 ) -> Result<()> {
     loop {
         if cancel.is_cancelled() {
@@ -1708,6 +1729,7 @@ fn encode_stage<E: FrameEncoder>(
         match rx.blocking_recv() {
             Some(frame) => {
                 debug_assert_eq!(frame.texture.format, PixelFormat::Nv12);
+                audit_device_texture("encode-input", &frame.texture, strict_no_host_copies)?;
                 let t_enc = Instant::now();
                 encoder.encode(frame)?;
                 let enc_us = t_enc.elapsed().as_micros() as u64;
