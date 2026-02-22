@@ -145,26 +145,33 @@ pub struct BatchConfig {
 }
 ```
 
-When `max_batch > 1`, the inference stage collects up to `max_batch` frames before dispatching a single TensorRT invocation, or flushes early if `latency_deadline_us` elapses. This trades per-frame latency for higher throughput on models that benefit from batched execution.
+Current status: `BatchConfig` is API-plumbed, but runtime execution scheduling is
+single-frame today (`N=1` dispatch in the active `process()` path). There is no
+batch queue or latency-deadline flush loop implemented yet.
 
-## Module dependency graph
+To implement real micro-batching, the inference stage would need:
+- a bounded batch queue/collector in front of backend dispatch
+- a flush policy driven by `latency_deadline_us`
+- batch-aware output ordering and error handling
+
+## Crate dependency graph (workspace reality)
 
 ```
-main.rs
-  ├── core::context         GpuContext, BucketedPool, VRAM accounting, QueueDepthTracker
-  ├── core::kernels         PreprocessKernels, NVRTC compilation, StageMetrics
-  ├── core::backend         UpscaleBackend trait, ModelMetadata
-  ├── core::types           GpuTexture, FrameEnvelope, PixelFormat
-  ├── backends::tensorrt    TensorRtBackend, ORT session, IO binding, OutputRing, BatchConfig
-  ├── codecs::nvdec         NvDecoder, BitstreamSource, parser callbacks
-  ├── codecs::nvenc         NvEncoder, BitstreamSink, registration cache
-  ├── codecs::sys           Raw FFI: nvcuvid, nvEncodeAPI, CUDA driver
-  ├── engine::pipeline      UpscalePipeline, PipelineConfig, PipelineMetrics
-  ├── engine::inference     InferencePipeline (end-to-end convenience wrapper)
-  ├── io::probe             FFmpeg container probing
-  ├── io::ffmpeg_demuxer / ffmpeg_muxer    Container demux/mux via FFmpeg
-  ├── io::file_source / file_sink          Raw bitstream I/O
-  └── error                 EngineError, stable error codes, Result alias
+rave-cli
+  ├── rave-core        (shared errors/types used by CLI contracts)
+  └── rave-pipeline    (composition root + runtime helpers)
+        ├── rave-core
+        ├── rave-cuda
+        ├── rave-tensorrt
+        ├── rave-nvcodec
+        └── rave-ffmpeg
+
+Leaf domain crates:
+- rave-cuda      -> rave-core
+- rave-tensorrt  -> rave-core (rave-cuda allowed by policy, not required today)
+- rave-nvcodec   -> rave-core (rave-cuda allowed by policy, not required today)
+- rave-ffmpeg    -> rave-core
+- rave-core      -> (no internal rave-* deps)
 ```
 
 ## Data flow
@@ -193,7 +200,10 @@ The preprocess and postprocess conversions are performed by CUDA kernels compile
 
 ### VRAM accounting
 
-`GpuContext` maintains an atomic byte counter tracking total device memory in use. An optional `--vram-limit` flag sets a hard ceiling. Allocation requests that would exceed the limit return `EngineError::VramExhausted` rather than risking OOM.
+`GpuContext` maintains an atomic byte counter tracking total device memory in
+use. An optional `--vram-limit` flag sets a ceiling for observability, but the
+allocator currently warns when usage exceeds the configured limit; it does not
+return a dedicated VRAM-limit error variant at allocation time.
 
 ### Ownership model
 

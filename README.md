@@ -144,7 +144,7 @@ Progress JSONL contract (`--progress jsonl` or `--jsonl`):
 - Units: `elapsed_ms` is wall-clock milliseconds; frame counters are cumulative counts.
 - Schema:
 ```json
-{"schema_version":1,"type":"progress","command":"benchmark|upscale","elapsed_ms":1234,"frames":{"decoded":120,"inferred":118,"encoded":0},"final":false}
+{"schema_version":1,"type":"progress","command":"benchmark|upscale|validate","elapsed_ms":1234,"frames":{"decoded":120,"inferred":118,"encoded":0},"final":false}
 ```
 - Example lines:
 ```json
@@ -210,10 +210,10 @@ cargo run --example batch_directory
 cargo run --example benchmark
 ```
 
-## Prelude
+## Integration Entry Points
 
-`rave::prelude` re-exports common types and pipeline entry types:
+Use the real entry points that exist today:
 
-- `GpuTexture`, `FrameEnvelope`, `PixelFormat`
-- `PipelineConfig`, `UpscalePipeline`
-- `EngineError`, `Result`
+- CLI workflows: `rave-cli` (`rave probe`, `rave devices`, `rave benchmark`, `rave upscale`, `rave validate`)
+- Library orchestration: `rave-pipeline` exports `UpscalePipeline`, `PipelineConfig`, `StageGraph`, `ProfilePreset`, `RunContract`
+- Shared contracts: `rave-core` exports `GpuTexture`, `FrameEnvelope`, `PixelFormat`, `EngineError`, `Result`
