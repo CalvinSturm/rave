@@ -486,13 +486,10 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 fn maybe_reexec_with_ort_ld_library_path() {
-    if mock_run_enabled() {
-        return;
-    }
     let mut args = std::env::args();
     let _bin = args.next();
     let sub = args.next().unwrap_or_default().to_ascii_lowercase();
-    if sub != "upscale" && sub != "benchmark" {
+    if !should_reexec_for_command(&sub, mock_run_enabled()) {
         return;
     }
     if std::env::var_os("RAVE_ORT_LD_REEXEC").is_some() {
@@ -541,6 +538,15 @@ fn maybe_reexec_with_ort_ld_library_path() {
     }
     let err = cmd.exec();
     eprintln!("failed to re-exec with ORT loader path: {err}");
+}
+
+#[cfg(target_os = "linux")]
+fn should_reexec_for_command(cmd: &str, mock_mode: bool) -> bool {
+    if mock_mode {
+        return false;
+    }
+
+    matches!(cmd, "upscale" | "benchmark" | "validate")
 }
 
 #[cfg(target_os = "linux")]
@@ -2491,5 +2497,45 @@ mod tests {
         assert!(msg.contains("default model not found"));
         assert!(msg.contains("RAVE_VALIDATE_MODEL"));
         assert!(msg.contains(missing.to_string_lossy().as_ref()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reexec_gate_includes_upscale() {
+        assert!(should_reexec_for_command("upscale", false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reexec_gate_includes_benchmark() {
+        assert!(should_reexec_for_command("benchmark", false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reexec_gate_includes_validate() {
+        assert!(should_reexec_for_command("validate", false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reexec_gate_excludes_probe() {
+        assert!(!should_reexec_for_command("probe", false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reexec_gate_excludes_devices() {
+        assert!(!should_reexec_for_command("devices", false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reexec_gate_excludes_all_commands_in_mock_mode() {
+        assert!(!should_reexec_for_command("upscale", true));
+        assert!(!should_reexec_for_command("benchmark", true));
+        assert!(!should_reexec_for_command("validate", true));
+        assert!(!should_reexec_for_command("probe", true));
+        assert!(!should_reexec_for_command("devices", true));
     }
 }
