@@ -26,6 +26,29 @@ fn assert_schema_version(value: &serde_json::Value) {
     );
 }
 
+fn assert_dev_policy(value: &serde_json::Value) {
+    let policy = value.get("policy").expect("missing policy object");
+    assert_eq!(policy.get("profile").and_then(|v| v.as_str()), Some("dev"));
+    assert_eq!(
+        policy.get("strict_invariants").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        policy.get("strict_vram_limit").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        policy
+            .get("strict_no_host_copies")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        policy.get("determinism_policy").and_then(|v| v.as_str()),
+        Some("best_effort")
+    );
+}
+
 #[test]
 fn help_lists_subcommands() {
     let output = Command::new(env!("CARGO_BIN_EXE_rave"))
@@ -180,6 +203,7 @@ fn validate_json_without_input_is_single_schema_object() {
         value.get("host_copy_audit_disable_reason").is_some(),
         "missing host_copy_audit_disable_reason field"
     );
+    assert_dev_policy(&value);
 }
 
 #[test]
@@ -331,6 +355,7 @@ fn benchmark_dry_run_emits_valid_json_shape() {
     assert!(stages.get("decode").is_some(), "missing stages.decode");
     assert!(stages.get("infer").is_some(), "missing stages.infer");
     assert!(stages.get("encode").is_some(), "missing stages.encode");
+    assert_dev_policy(&value);
 
     let json_out_value: serde_json::Value = serde_json::from_slice(
         &fs::read(&json_out).expect("benchmark --json-out file should exist"),
@@ -341,6 +366,7 @@ fn benchmark_dry_run_emits_valid_json_shape() {
         json_out_value.get("stages").is_some(),
         "missing stages in benchmark --json-out payload"
     );
+    assert_dev_policy(&json_out_value);
 }
 
 #[test]
@@ -451,6 +477,7 @@ fn benchmark_dry_run_json_mode_is_clean_stdout_even_with_progress_flags() {
         stdout_value.get("command").and_then(|v| v.as_str()),
         Some("benchmark")
     );
+    assert_dev_policy(&stdout_value);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -510,6 +537,7 @@ fn upscale_dry_run_json_emits_valid_json_shape() {
         value.get("height").and_then(|v| v.as_u64()).is_some(),
         "missing height field"
     );
+    assert_dev_policy(&value);
 }
 
 #[test]
@@ -552,6 +580,7 @@ fn upscale_dry_run_json_mode_is_clean_stdout_even_with_progress_flags() {
         stdout_value.get("command").and_then(|v| v.as_str()),
         Some("upscale")
     );
+    assert_dev_policy(&stdout_value);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

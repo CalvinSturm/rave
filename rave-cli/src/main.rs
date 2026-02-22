@@ -379,6 +379,7 @@ enum BenchmarkEncodeMode {
 
 #[derive(Debug)]
 struct BenchmarkSummary {
+    profile: ProfileArg,
     fps: f64,
     frames: u64,
     elapsed_ms: f64,
@@ -393,16 +394,18 @@ impl BenchmarkSummary {
             Some(v) => json_number(v),
             None => "\"skipped\"".to_string(),
         };
+        let policy = policy_snapshot_for_profile(self.profile).to_json_object();
 
         format!(
-            "{{\"schema_version\":{},\"command\":\"benchmark\",\"ok\":true,\"fps\":{},\"frames\":{},\"elapsed_ms\":{},\"stages\":{{\"decode\":{},\"infer\":{},\"encode\":{}}}}}",
+            "{{\"schema_version\":{},\"command\":\"benchmark\",\"ok\":true,\"fps\":{},\"frames\":{},\"elapsed_ms\":{},\"stages\":{{\"decode\":{},\"infer\":{},\"encode\":{}}},\"policy\":{}}}",
             JSON_SCHEMA_VERSION,
             json_number(self.fps),
             self.frames,
             json_number(self.elapsed_ms),
             json_number(self.decode_avg_us),
             json_number(self.infer_avg_us),
-            encode_field
+            encode_field,
+            policy
         )
     }
 
@@ -411,9 +414,16 @@ impl BenchmarkSummary {
             Some(v) => format!("{:.3}", v),
             None => "skipped".to_string(),
         };
+        let policy = policy_snapshot_for_profile(self.profile).to_human();
         format!(
-            "benchmark: frames={} fps={:.3} elapsed_ms={:.3} decode_avg_us={:.3} infer_avg_us={:.3} encode_avg_us={}",
-            self.frames, self.fps, self.elapsed_ms, self.decode_avg_us, self.infer_avg_us, encode
+            "benchmark: frames={} fps={:.3} elapsed_ms={:.3} decode_avg_us={:.3} infer_avg_us={:.3} encode_avg_us={} policy={}",
+            self.frames,
+            self.fps,
+            self.elapsed_ms,
+            self.decode_avg_us,
+            self.infer_avg_us,
+            encode,
+            policy
         )
     }
 }
@@ -879,6 +889,7 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
                 "{}",
                 upscale_json(
                     true,
+                    args.shared.profile,
                     &args.shared.input,
                     &args.output,
                     &args.shared.model,
@@ -894,7 +905,7 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
             );
         } else {
             println!(
-                "dry-run: command=upscale input={} output={} model={} codec={:?} resolution={}x{} fps={}/{}",
+                "dry-run: command=upscale input={} output={} model={} codec={:?} resolution={}x{} fps={}/{} policy={}",
                 args.shared.input.display(),
                 args.output.display(),
                 args.shared.model.display(),
@@ -902,7 +913,8 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
                 resolved.width,
                 resolved.height,
                 resolved.fps_num,
-                resolved.fps_den
+                resolved.fps_den,
+                policy_snapshot_for_profile(args.shared.profile).to_human()
             );
         }
         return Ok(());
@@ -968,6 +980,7 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
             "{}",
             upscale_json(
                 false,
+                args.shared.profile,
                 &args.shared.input,
                 &args.output,
                 &args.shared.model,
@@ -983,10 +996,11 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
         );
     } else {
         println!(
-            "upscale: ok output={} elapsed_s={:.3} vram_peak_mb={}",
+            "upscale: ok output={} elapsed_s={:.3} vram_peak_mb={} policy={}",
             args.output.display(),
             elapsed.as_secs_f64(),
-            vram_peak / (1024 * 1024)
+            vram_peak / (1024 * 1024),
+            policy_snapshot_for_profile(args.shared.profile).to_human()
         );
     }
 
@@ -1006,6 +1020,7 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
     let emit_json_stdout = args.json;
     if args.dry_run {
         let summary = BenchmarkSummary {
+            profile: args.shared.profile,
             fps: 0.0,
             frames: 0,
             elapsed_ms: 0.0,
@@ -1031,6 +1046,7 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
                 "Benchmark runtime init failed under WSL loader conflict; emitting skipped benchmark JSON"
             );
             let summary = BenchmarkSummary {
+                profile: args.shared.profile,
                 fps: 0.0,
                 frames: 0,
                 elapsed_ms: 0.0,
@@ -1120,6 +1136,7 @@ async fn run_upscale_with_graph(
             "{}",
             upscale_json(
                 false,
+                args.shared.profile,
                 &args.shared.input,
                 &args.output,
                 &args.shared.model,
@@ -1135,11 +1152,12 @@ async fn run_upscale_with_graph(
         );
     } else {
         println!(
-            "upscale: ok output={} elapsed_s={:.3} vram_peak_mb={} profile={}",
+            "upscale: ok output={} elapsed_s={:.3} vram_peak_mb={} profile={} policy={}",
             args.output.display(),
             elapsed.as_secs_f64(),
             report.vram_peak_bytes / (1024 * 1024),
-            profile_label(args.shared.profile)
+            profile_label(args.shared.profile),
+            policy_snapshot_for_profile(args.shared.profile).to_human()
         );
     }
 
@@ -1182,6 +1200,7 @@ async fn run_upscale_mock(args: UpscaleArgs, resolved: ResolvedInput) -> Result<
             "{}",
             upscale_json(
                 false,
+                args.shared.profile,
                 &args.shared.input,
                 &args.output,
                 &args.shared.model,
@@ -1197,10 +1216,11 @@ async fn run_upscale_mock(args: UpscaleArgs, resolved: ResolvedInput) -> Result<
         );
     } else {
         println!(
-            "upscale: ok output={} elapsed_s={:.3} vram_peak_mb={}",
+            "upscale: ok output={} elapsed_s={:.3} vram_peak_mb={} policy={}",
             args.output.display(),
             0.013,
-            0
+            0,
+            policy_snapshot_for_profile(args.shared.profile).to_human()
         );
     }
 
@@ -1239,6 +1259,7 @@ async fn run_benchmark_mock(args: BenchmarkArgs, emit_json_stdout: bool) -> Resu
     }
 
     let summary = BenchmarkSummary {
+        profile: args.shared.profile,
         fps: 240.0,
         frames: 8,
         elapsed_ms: 33.333,
@@ -1271,6 +1292,15 @@ struct ValidateSummary {
 }
 
 impl ValidateSummary {
+    fn policy_snapshot(&self) -> PolicySnapshot {
+        PolicySnapshot::from_parts(
+            self.profile,
+            strict_settings_for_profile_arg(self.profile),
+            self.host_copy_audit_enabled,
+            self.host_copy_audit_disable_reason.clone(),
+        )
+    }
+
     fn to_human(&self) -> String {
         let model = self.model_path.as_deref().unwrap_or("n/a");
         let host_copy_audit = if self.host_copy_audit_enabled {
@@ -1283,12 +1313,14 @@ impl ValidateSummary {
                     .unwrap_or("unknown")
             )
         };
+        let policy = self.policy_snapshot().to_human();
         if self.skipped {
             return format!(
-                "validate: skipped profile={} model={} host_copy_audit={} warnings={}",
+                "validate: skipped profile={} model={} host_copy_audit={} policy={} warnings={}",
                 profile_label(self.profile),
                 model,
                 host_copy_audit,
+                policy,
                 self.warnings.join(" | ")
             );
         }
@@ -1311,7 +1343,7 @@ impl ValidateSummary {
             "n/a".to_string()
         };
         format!(
-            "validate: ok={} profile={} model={} runs={} determinism={} determinism_hash={} host_copy_audit={} max_infer_us={:.3} peak_vram_mb={} frames_decoded={} frames_encoded={} warnings={}",
+            "validate: ok={} profile={} model={} runs={} determinism={} determinism_hash={} host_copy_audit={} policy={} max_infer_us={:.3} peak_vram_mb={} frames_decoded={} frames_encoded={} warnings={}",
             self.ok,
             profile_label(self.profile),
             model,
@@ -1319,6 +1351,7 @@ impl ValidateSummary {
             determinism,
             determinism_hash,
             host_copy_audit,
+            policy,
             self.max_infer_us,
             self.peak_vram_mb,
             self.frames_decoded,
@@ -1366,8 +1399,9 @@ impl ValidateSummary {
             .as_ref()
             .map(|v| json_string(v))
             .unwrap_or_else(|| "null".to_string());
+        let policy = self.policy_snapshot().to_json_object();
         format!(
-            "{{\"schema_version\":{},\"command\":\"validate\",\"ok\":{},\"skipped\":{},\"profile\":{},\"model_path\":{},\"runs\":{},\"determinism_equal\":{},\"determinism_hash_count\":{},\"determinism_hash_sample\":{},\"determinism_hash_skipped\":{},\"determinism_hash_skip_reason\":{},\"host_copy_audit_enabled\":{},\"host_copy_audit_disable_reason\":{},\"max_infer_us\":{},\"peak_vram_mb\":{},\"frames\":{{\"decoded\":{},\"encoded\":{}}},\"warnings\":[{}]}}",
+            "{{\"schema_version\":{},\"command\":\"validate\",\"ok\":{},\"skipped\":{},\"profile\":{},\"model_path\":{},\"runs\":{},\"determinism_equal\":{},\"determinism_hash_count\":{},\"determinism_hash_sample\":{},\"determinism_hash_skipped\":{},\"determinism_hash_skip_reason\":{},\"host_copy_audit_enabled\":{},\"host_copy_audit_disable_reason\":{},\"policy\":{},\"max_infer_us\":{},\"peak_vram_mb\":{},\"frames\":{{\"decoded\":{},\"encoded\":{}}},\"warnings\":[{}]}}",
             JSON_SCHEMA_VERSION,
             self.ok,
             self.skipped,
@@ -1381,6 +1415,7 @@ impl ValidateSummary {
             determinism_hash_skip_reason,
             self.host_copy_audit_enabled,
             host_copy_audit_disable_reason,
+            policy,
             json_number(self.max_infer_us),
             self.peak_vram_mb,
             self.frames_decoded,
@@ -2042,6 +2077,7 @@ async fn run_benchmark_once(
 Run with: LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda-12/targets/x86_64-linux/lib:${{LD_LIBRARY_PATH:-}}"
         );
         return Ok(BenchmarkSummary {
+            profile: args.shared.profile,
             fps: 0.0,
             frames: 0,
             elapsed_ms: 0.0,
@@ -2102,6 +2138,7 @@ Run with: LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda-12/targets/x86_64-lin
         &metrics,
         elapsed,
         matches!(mode, BenchmarkEncodeMode::Skipped),
+        args.shared.profile,
     ))
 }
 
@@ -2141,6 +2178,7 @@ fn make_benchmark_summary(
     metrics: &PipelineMetrics,
     elapsed: Duration,
     encode_skipped: bool,
+    profile: ProfileArg,
 ) -> BenchmarkSummary {
     let decoded = metrics
         .frames_decoded
@@ -2160,6 +2198,7 @@ fn make_benchmark_summary(
     let elapsed_s = elapsed.as_secs_f64();
 
     BenchmarkSummary {
+        profile,
         fps: if measured_frames > 0 && elapsed_s > 0.0 {
             measured_frames as f64 / elapsed_s
         } else {
@@ -2361,6 +2400,7 @@ fn probe_json_single(
 #[allow(clippy::too_many_arguments)]
 fn upscale_json(
     dry_run: bool,
+    profile: ProfileArg,
     input: &Path,
     output: &Path,
     model: &Path,
@@ -2373,8 +2413,9 @@ fn upscale_json(
     vram_current_mb: usize,
     vram_peak_mb: usize,
 ) -> String {
+    let policy = policy_snapshot_for_profile(profile).to_json_object();
     format!(
-        "{{\"schema_version\":{},\"command\":\"upscale\",\"ok\":true,\"dry_run\":{},\"input\":{},\"output\":{},\"model\":{},\"codec\":{},\"width\":{},\"height\":{},\"fps_num\":{},\"fps_den\":{},\"elapsed_ms\":{},\"vram_current_mb\":{},\"vram_peak_mb\":{}}}",
+        "{{\"schema_version\":{},\"command\":\"upscale\",\"ok\":true,\"dry_run\":{},\"input\":{},\"output\":{},\"model\":{},\"codec\":{},\"width\":{},\"height\":{},\"fps_num\":{},\"fps_den\":{},\"elapsed_ms\":{},\"vram_current_mb\":{},\"vram_peak_mb\":{},\"policy\":{}}}",
         JSON_SCHEMA_VERSION,
         dry_run,
         json_string(&input.display().to_string()),
@@ -2387,7 +2428,8 @@ fn upscale_json(
         fps_den,
         json_number(elapsed_ms),
         vram_current_mb,
-        vram_peak_mb
+        vram_peak_mb,
+        policy
     )
 }
 
@@ -2633,6 +2675,103 @@ fn strict_settings_for_profile_arg(profile: ProfileArg) -> StrictSettings {
     strict_settings_for_profile(profile_to_preset(profile))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PolicySnapshot {
+    profile: &'static str,
+    strict_invariants: bool,
+    strict_vram_limit: bool,
+    strict_no_host_copies: bool,
+    determinism_policy: &'static str,
+    enable_ort_reexec_gate: bool,
+    host_copy_audit_enabled: bool,
+    host_copy_audit_disable_reason: Option<String>,
+}
+
+impl PolicySnapshot {
+    fn from_profile(profile: ProfileArg) -> Self {
+        let strict = strict_settings_for_profile_arg(profile);
+        let (host_copy_audit_enabled, host_copy_audit_disable_reason) =
+            host_copy_audit_summary_fields();
+        Self::from_parts(
+            profile,
+            strict,
+            host_copy_audit_enabled,
+            host_copy_audit_disable_reason,
+        )
+    }
+
+    fn from_parts(
+        profile: ProfileArg,
+        strict: StrictSettings,
+        host_copy_audit_enabled: bool,
+        host_copy_audit_disable_reason: Option<String>,
+    ) -> Self {
+        Self {
+            profile: profile_label(profile),
+            strict_invariants: strict.strict_invariants,
+            strict_vram_limit: strict.strict_vram_limit,
+            strict_no_host_copies: strict.strict_no_host_copies,
+            determinism_policy: determinism_policy_label(strict.determinism_policy),
+            enable_ort_reexec_gate: strict.enable_ort_reexec_gate,
+            host_copy_audit_enabled,
+            host_copy_audit_disable_reason,
+        }
+    }
+
+    fn to_json_object(&self) -> String {
+        let host_copy_audit_disable_reason = self
+            .host_copy_audit_disable_reason
+            .as_ref()
+            .map(|v| json_string(v))
+            .unwrap_or_else(|| "null".to_string());
+        format!(
+            "{{\"profile\":{},\"strict_invariants\":{},\"strict_vram_limit\":{},\"strict_no_host_copies\":{},\"determinism_policy\":{},\"enable_ort_reexec_gate\":{},\"host_copy_audit_enabled\":{},\"host_copy_audit_disable_reason\":{}}}",
+            json_string(self.profile),
+            self.strict_invariants,
+            self.strict_vram_limit,
+            self.strict_no_host_copies,
+            json_string(self.determinism_policy),
+            self.enable_ort_reexec_gate,
+            self.host_copy_audit_enabled,
+            host_copy_audit_disable_reason
+        )
+    }
+
+    fn to_human(&self) -> String {
+        let host_copy_audit = if self.host_copy_audit_enabled {
+            "enabled".to_string()
+        } else {
+            format!(
+                "disabled({})",
+                self.host_copy_audit_disable_reason
+                    .as_deref()
+                    .unwrap_or("unknown")
+            )
+        };
+        format!(
+            "profile={} strict_invariants={} strict_vram_limit={} strict_no_host_copies={} determinism_policy={} enable_ort_reexec_gate={} host_copy_audit={}",
+            self.profile,
+            self.strict_invariants,
+            self.strict_vram_limit,
+            self.strict_no_host_copies,
+            self.determinism_policy,
+            self.enable_ort_reexec_gate,
+            host_copy_audit
+        )
+    }
+}
+
+fn determinism_policy_label(policy: DeterminismPolicy) -> &'static str {
+    match policy {
+        DeterminismPolicy::BestEffort => "best_effort",
+        DeterminismPolicy::RequireHash => "require_hash",
+    }
+}
+
+fn policy_snapshot_for_profile(profile: ProfileArg) -> PolicySnapshot {
+    PolicySnapshot::from_profile(profile)
+}
+
 fn profile_label(profile: ProfileArg) -> &'static str {
     match profile {
         ProfileArg::Dev => "dev",
@@ -2815,6 +2954,41 @@ mod tests {
                     "production_strict should fail when host-copy auditing is unavailable",
                 );
                 assert!(err.to_string().contains(reason.code()));
+            }
+        }
+    }
+
+    #[test]
+    fn policy_snapshot_dev_uses_best_effort_defaults() {
+        let snapshot = policy_snapshot_for_profile(ProfileArg::Dev);
+        assert_eq!(snapshot.profile, "dev");
+        assert!(!snapshot.strict_invariants);
+        assert!(!snapshot.strict_vram_limit);
+        assert!(!snapshot.strict_no_host_copies);
+        assert_eq!(snapshot.determinism_policy, "best_effort");
+        assert!(snapshot.enable_ort_reexec_gate);
+    }
+
+    #[test]
+    fn policy_snapshot_production_strict_enables_all_strict_flags() {
+        let snapshot = policy_snapshot_for_profile(ProfileArg::ProductionStrict);
+        assert_eq!(snapshot.profile, "production_strict");
+        assert!(snapshot.strict_invariants);
+        assert!(snapshot.strict_vram_limit);
+        assert!(snapshot.strict_no_host_copies);
+        assert_eq!(snapshot.determinism_policy, "require_hash");
+        assert!(snapshot.enable_ort_reexec_gate);
+        match host_copy_audit_status() {
+            HostCopyAuditStatus::Enabled => {
+                assert!(snapshot.host_copy_audit_enabled);
+                assert!(snapshot.host_copy_audit_disable_reason.is_none());
+            }
+            HostCopyAuditStatus::Disabled { reason } => {
+                assert!(!snapshot.host_copy_audit_enabled);
+                assert_eq!(
+                    snapshot.host_copy_audit_disable_reason.as_deref(),
+                    Some(reason.code())
+                );
             }
         }
     }

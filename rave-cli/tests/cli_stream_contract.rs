@@ -25,7 +25,7 @@ fn nonempty_lines(s: &str) -> Vec<&str> {
     s.lines().filter(|line| !line.trim().is_empty()).collect()
 }
 
-fn assert_single_stdout_json(stdout: &[u8], command: &str, ok: bool) {
+fn assert_single_stdout_json(stdout: &[u8], command: &str, ok: bool) -> serde_json::Value {
     let stdout_s = String::from_utf8_lossy(stdout);
     let lines = nonempty_lines(&stdout_s);
     assert_eq!(
@@ -50,6 +50,58 @@ fn assert_single_stdout_json(stdout: &[u8], command: &str, ok: bool) {
         value.get("ok").and_then(|v| v.as_bool()),
         Some(ok),
         "unexpected ok field in stdout JSON: {value}"
+    );
+    value
+}
+
+fn assert_policy_fields(
+    value: &serde_json::Value,
+    profile: &str,
+    strict_invariants: bool,
+    strict_vram_limit: bool,
+    strict_no_host_copies: bool,
+    determinism_policy: &str,
+) {
+    let policy = value.get("policy").expect("missing policy object");
+    assert_eq!(
+        policy.get("profile").and_then(|v| v.as_str()),
+        Some(profile)
+    );
+    assert_eq!(
+        policy.get("strict_invariants").and_then(|v| v.as_bool()),
+        Some(strict_invariants)
+    );
+    assert_eq!(
+        policy.get("strict_vram_limit").and_then(|v| v.as_bool()),
+        Some(strict_vram_limit)
+    );
+    assert_eq!(
+        policy
+            .get("strict_no_host_copies")
+            .and_then(|v| v.as_bool()),
+        Some(strict_no_host_copies)
+    );
+    assert_eq!(
+        policy.get("determinism_policy").and_then(|v| v.as_str()),
+        Some(determinism_policy)
+    );
+    assert!(
+        policy
+            .get("enable_ort_reexec_gate")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "missing enable_ort_reexec_gate in policy: {policy}"
+    );
+    assert!(
+        policy
+            .get("host_copy_audit_enabled")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "missing host_copy_audit_enabled in policy: {policy}"
+    );
+    assert!(
+        policy.get("host_copy_audit_disable_reason").is_some(),
+        "missing host_copy_audit_disable_reason in policy: {policy}"
     );
 }
 
@@ -122,7 +174,8 @@ fn upscale_json_stdout_is_clean_and_stderr_has_progress() {
         "mock upscale failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_single_stdout_json(&output.stdout, "upscale", true);
+    let value = assert_single_stdout_json(&output.stdout, "upscale", true);
+    assert_policy_fields(&value, "dev", false, false, false, "best_effort");
     assert_stderr_has_progress_jsonl(&output.stderr, "upscale");
 }
 
@@ -154,7 +207,8 @@ fn benchmark_json_stdout_is_clean_and_stderr_has_progress() {
         "mock benchmark failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_single_stdout_json(&output.stdout, "benchmark", true);
+    let value = assert_single_stdout_json(&output.stdout, "benchmark", true);
+    assert_policy_fields(&value, "dev", false, false, false, "best_effort");
     assert_stderr_has_progress_jsonl(&output.stderr, "benchmark");
 }
 
@@ -190,7 +244,8 @@ fn validate_json_stdout_is_clean_and_stderr_has_progress() {
         "mock validate failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_single_stdout_json(&output.stdout, "validate", true);
+    let value = assert_single_stdout_json(&output.stdout, "validate", true);
+    assert_policy_fields(&value, "dev", false, false, false, "best_effort");
     assert_stderr_has_progress_jsonl(&output.stderr, "validate");
 }
 
@@ -226,7 +281,7 @@ fn upscale_json_error_is_single_object_on_stdout() {
         !output.status.success(),
         "mock upscale failure unexpectedly succeeded"
     );
-    assert_single_stdout_json(&output.stdout, "upscale", false);
+    let _ = assert_single_stdout_json(&output.stdout, "upscale", false);
     assert_stderr_has_progress_jsonl(&output.stderr, "upscale");
 }
 
@@ -283,7 +338,7 @@ fn upscale_json_rejects_micro_batching_in_mock_mode() {
         !output.status.success(),
         "mock upscale with max_batch=2 unexpectedly succeeded"
     );
-    assert_single_stdout_json(&output.stdout, "upscale", false);
+    let _ = assert_single_stdout_json(&output.stdout, "upscale", false);
     let stdout_s = String::from_utf8_lossy(&output.stdout);
     let lines = nonempty_lines(&stdout_s);
     let value: serde_json::Value =
@@ -324,14 +379,17 @@ fn validate_mock_production_strict_enforces_host_copy_audit_availability() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_single_stdout_json(&output.stdout, "validate", strict_ok);
+    let value = assert_single_stdout_json(&output.stdout, "validate", strict_ok);
     assert_stderr_has_progress_jsonl(&output.stderr, "validate");
-
-    let stdout_s = String::from_utf8_lossy(&output.stdout);
-    let lines = nonempty_lines(&stdout_s);
-    let value: serde_json::Value =
-        serde_json::from_str(lines[0]).expect("stdout JSON should parse");
     if strict_ok {
+        assert_policy_fields(
+            &value,
+            "production_strict",
+            true,
+            true,
+            true,
+            "require_hash",
+        );
         assert_eq!(
             value
                 .get("host_copy_audit_enabled")
