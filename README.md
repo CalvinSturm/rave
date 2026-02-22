@@ -62,6 +62,9 @@ No-host-copies checklist:
 Unsafe-boundary audit checklist:
 - `docs/unsafe_audit.md`
 
+Consumer integration contract:
+- `docs/integration_contract.md`
+
 Stage graph integration API:
 - `rave-pipeline` exports `StageGraph`, `StageConfig`, `ProfilePreset`,
   `RunContract`, and `UpscalePipeline::run_graph(...)`.
