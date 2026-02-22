@@ -32,9 +32,10 @@ use rave_pipeline::runtime::{
     resolve_input as pipeline_resolve_input,
 };
 use rave_pipeline::{
-    AuditLevel, BatchConfig as GraphBatchConfig, EnhanceConfig, GRAPH_SCHEMA_VERSION,
-    PipelineReport, PrecisionPolicyConfig, ProfilePreset, RunContract, StageConfig, StageGraph,
-    StageId,
+    AuditLevel, BatchConfig as GraphBatchConfig, DeterminismObserved, DeterminismPolicy,
+    DeterminismSkipReason, EnhanceConfig, GRAPH_SCHEMA_VERSION, PipelineReport,
+    PrecisionPolicyConfig, ProfilePreset, RunContract, StageConfig, StageGraph, StageId,
+    enforce_determinism_policy,
 };
 
 #[cfg(target_os = "linux")]
@@ -1210,6 +1211,10 @@ struct ValidateSummary {
     model_path: Option<String>,
     runs: u32,
     determinism_equal: Option<bool>,
+    determinism_hash_count: Option<usize>,
+    determinism_hash_sample: Option<String>,
+    determinism_hash_skipped: Option<bool>,
+    determinism_hash_skip_reason: Option<String>,
     max_infer_us: f64,
     peak_vram_mb: usize,
     frames_decoded: u64,
@@ -1233,13 +1238,27 @@ impl ValidateSummary {
             .determinism_equal
             .map(|v| if v { "pass" } else { "fail" })
             .unwrap_or("n/a");
+        let determinism_hash = if self.determinism_hash_skipped == Some(true) {
+            format!(
+                "skipped({})",
+                self.determinism_hash_skip_reason
+                    .as_deref()
+                    .unwrap_or("unknown")
+            )
+        } else if let Some(count) = self.determinism_hash_count {
+            let sample = self.determinism_hash_sample.as_deref().unwrap_or("n/a");
+            format!("captured(count={count},sample={sample})")
+        } else {
+            "n/a".to_string()
+        };
         format!(
-            "validate: ok={} profile={} model={} runs={} determinism={} max_infer_us={:.3} peak_vram_mb={} frames_decoded={} frames_encoded={} warnings={}",
+            "validate: ok={} profile={} model={} runs={} determinism={} determinism_hash={} max_infer_us={:.3} peak_vram_mb={} frames_decoded={} frames_encoded={} warnings={}",
             self.ok,
             profile_label(self.profile),
             model,
             self.runs,
             determinism,
+            determinism_hash,
             self.max_infer_us,
             self.peak_vram_mb,
             self.frames_decoded,
@@ -1264,8 +1283,26 @@ impl ValidateSummary {
             .as_ref()
             .map(|path| json_string(path))
             .unwrap_or_else(|| "null".to_string());
+        let determinism_hash_count = self
+            .determinism_hash_count
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "null".to_string());
+        let determinism_hash_sample = self
+            .determinism_hash_sample
+            .as_ref()
+            .map(|v| json_string(v))
+            .unwrap_or_else(|| "null".to_string());
+        let determinism_hash_skipped = self
+            .determinism_hash_skipped
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "null".to_string());
+        let determinism_hash_skip_reason = self
+            .determinism_hash_skip_reason
+            .as_ref()
+            .map(|v| json_string(v))
+            .unwrap_or_else(|| "null".to_string());
         format!(
-            "{{\"schema_version\":{},\"command\":\"validate\",\"ok\":{},\"skipped\":{},\"profile\":{},\"model_path\":{},\"runs\":{},\"determinism_equal\":{},\"max_infer_us\":{},\"peak_vram_mb\":{},\"frames\":{{\"decoded\":{},\"encoded\":{}}},\"warnings\":[{}]}}",
+            "{{\"schema_version\":{},\"command\":\"validate\",\"ok\":{},\"skipped\":{},\"profile\":{},\"model_path\":{},\"runs\":{},\"determinism_equal\":{},\"determinism_hash_count\":{},\"determinism_hash_sample\":{},\"determinism_hash_skipped\":{},\"determinism_hash_skip_reason\":{},\"max_infer_us\":{},\"peak_vram_mb\":{},\"frames\":{{\"decoded\":{},\"encoded\":{}}},\"warnings\":[{}]}}",
             JSON_SCHEMA_VERSION,
             self.ok,
             self.skipped,
@@ -1273,6 +1310,10 @@ impl ValidateSummary {
             model_path,
             self.runs,
             determinism,
+            determinism_hash_count,
+            determinism_hash_sample,
+            determinism_hash_skipped,
+            determinism_hash_skip_reason,
             json_number(self.max_infer_us),
             self.peak_vram_mb,
             self.frames_decoded,
@@ -1412,6 +1453,38 @@ fn resolve_fixture_model_path(fixture: &ValidateFixture) -> Result<Option<PathBu
     })
 }
 
+fn determinism_policy_for_validate(
+    profile: ProfileArg,
+    allow_hash_skipped: bool,
+) -> DeterminismPolicy {
+    if matches!(profile, ProfileArg::ProductionStrict) || !allow_hash_skipped {
+        DeterminismPolicy::RequireHash
+    } else {
+        DeterminismPolicy::BestEffort
+    }
+}
+
+fn determinism_skip_reason_from_reports(
+    reports: &[PipelineReport],
+) -> Option<DeterminismSkipReason> {
+    for report in reports {
+        for check in &report.audit {
+            let reason = match check.code.as_str() {
+                "DETERMINISM_HASH_DISABLED" => Some(DeterminismSkipReason::FeatureDisabled),
+                "DETERMINISM_HASH_READBACK_FAILED" => {
+                    Some(DeterminismSkipReason::DebugReadbackUnavailable)
+                }
+                "DETERMINISM_HASH_EMPTY" => Some(DeterminismSkipReason::BackendNoReadback),
+                _ => None,
+            };
+            if reason.is_some() {
+                return reason;
+            }
+        }
+    }
+    None
+}
+
 fn emit_validate_skip(
     profile: ProfileArg,
     json: bool,
@@ -1427,6 +1500,10 @@ fn emit_validate_skip(
         model_path: model_path.map(|path| path.display().to_string()),
         runs,
         determinism_equal: None,
+        determinism_hash_count: None,
+        determinism_hash_sample: None,
+        determinism_hash_skipped: None,
+        determinism_hash_skip_reason: None,
         max_infer_us: 0.0,
         peak_vram_mb: 0,
         frames_decoded: 0,
@@ -1573,6 +1650,7 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
         .as_ref()
         .and_then(|f| f.allow_hash_skipped)
         .unwrap_or(true);
+    let determinism_policy = determinism_policy_for_validate(profile_arg, allow_hash_skipped);
 
     let (ctx, kernels) = match pipeline_create_context_and_kernels(
         device,
@@ -1611,7 +1689,10 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
     let mut contract = RunContract::for_profile(profile);
     contract.requested_device = device as u32;
     contract.determinism_hash_frames = determinism_samples;
-    if determinism_samples > 0 && allow_hash_skipped {
+    if determinism_samples > 0
+        && allow_hash_skipped
+        && matches!(determinism_policy, DeterminismPolicy::BestEffort)
+    {
         contract.fail_on_audit_warn = false;
     }
     let runs = if matches!(profile_arg, ProfileArg::ProductionStrict) {
@@ -1698,6 +1779,14 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
     let hashes_available = reports
         .iter()
         .all(|report| !report.stage_checksums.is_empty());
+    let hash_skip_reason = if determinism_requested && !hashes_available {
+        Some(
+            determinism_skip_reason_from_reports(&reports)
+                .unwrap_or(DeterminismSkipReason::Unknown),
+        )
+    } else {
+        None
+    };
     let determinism_equal = if runs > 1 && contract.deterministic_output && hashes_available {
         let baseline = &reports[0].stage_checksums;
         Some(
@@ -1709,11 +1798,14 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
     } else {
         None
     };
-    if determinism_requested && !hashes_available && !allow_hash_skipped {
-        return Err(EngineError::InvariantViolation(
-            "validate determinism failed: checkpoint hashes were requested but unavailable".into(),
-        ));
-    }
+    enforce_determinism_policy(
+        determinism_policy,
+        DeterminismObserved {
+            hash_requested: determinism_requested,
+            hash_available: hashes_available,
+            skip_reason: hash_skip_reason,
+        },
+    )?;
     if determinism_equal == Some(false) {
         return Err(EngineError::InvariantViolation(
             "validate determinism failed: stage checksums differ across runs".into(),
@@ -1729,6 +1821,22 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
             .map(|path| path.display().to_string()),
         runs,
         determinism_equal,
+        determinism_hash_count: if determinism_requested && hashes_available {
+            Some(first.stage_checksums.len())
+        } else {
+            None
+        },
+        determinism_hash_sample: if determinism_requested && hashes_available {
+            first.stage_checksums.first().cloned()
+        } else {
+            None
+        },
+        determinism_hash_skipped: if determinism_requested {
+            Some(!hashes_available)
+        } else {
+            None
+        },
+        determinism_hash_skip_reason: hash_skip_reason.map(|reason| reason.code().to_string()),
         max_infer_us: infer_avg,
         peak_vram_mb,
         frames_decoded: first.frames_decoded,
@@ -1793,6 +1901,10 @@ async fn run_validate_mock(args: ValidateArgs, progress_mode: ProgressMode) -> R
         model_path: args.model.as_ref().map(|p| p.display().to_string()),
         runs,
         determinism_equal: Some(true),
+        determinism_hash_count: None,
+        determinism_hash_sample: None,
+        determinism_hash_skipped: None,
+        determinism_hash_skip_reason: None,
         max_infer_us: 1800.0,
         peak_vram_mb: 0,
         frames_decoded: 2,

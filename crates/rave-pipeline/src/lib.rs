@@ -5,7 +5,10 @@ pub mod pipeline;
 pub mod runtime;
 pub mod stage_graph;
 
-pub use pipeline::{PipelineConfig, PipelineMetrics, UpscalePipeline};
+pub use pipeline::{
+    DeterminismObserved, DeterminismPolicy, DeterminismSkipReason, PipelineConfig, PipelineMetrics,
+    UpscalePipeline, enforce_determinism_policy,
+};
 pub use stage_graph::{
     AuditItem, AuditLevel, BatchConfig, BlurConfig, BlurMode, EnhanceConfig, GRAPH_SCHEMA_VERSION,
     PipelineReport, PrecisionPolicyConfig, ProfilePreset, Rect, RunContract, StageConfig,

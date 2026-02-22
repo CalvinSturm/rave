@@ -171,6 +171,85 @@ fn enforce_metrics_invariants(metrics: &PipelineMetrics, strict: bool) -> Result
     )))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DeterminismPolicy {
+    #[default]
+    BestEffort,
+    RequireHash,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeterminismSkipReason {
+    FeatureDisabled,
+    UnsupportedFormat,
+    DebugReadbackUnavailable,
+    BackendNoReadback,
+    ExplicitlyDisabled,
+    Unknown,
+}
+
+impl DeterminismSkipReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::FeatureDisabled => "feature_disabled",
+            Self::UnsupportedFormat => "unsupported_format",
+            Self::DebugReadbackUnavailable => "debug_readback_unavailable",
+            Self::BackendNoReadback => "backend_no_readback",
+            Self::ExplicitlyDisabled => "explicitly_disabled",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct DeterminismObserved {
+    pub hash_requested: bool,
+    pub hash_available: bool,
+    pub skip_reason: Option<DeterminismSkipReason>,
+}
+
+pub fn enforce_determinism_policy(
+    policy: DeterminismPolicy,
+    observed: DeterminismObserved,
+) -> Result<()> {
+    if !observed.hash_requested || observed.hash_available {
+        return Ok(());
+    }
+
+    match policy {
+        DeterminismPolicy::BestEffort => Ok(()),
+        DeterminismPolicy::RequireHash => {
+            let reason = observed
+                .skip_reason
+                .unwrap_or(DeterminismSkipReason::Unknown);
+            let hint = match reason {
+                DeterminismSkipReason::FeatureDisabled => {
+                    "Rebuild with feature `debug-host-copies` enabled."
+                }
+                DeterminismSkipReason::DebugReadbackUnavailable => {
+                    "Ensure debug host readback is available on this target/runtime."
+                }
+                DeterminismSkipReason::BackendNoReadback => {
+                    "Use a backend/target that supports determinism hash readback."
+                }
+                DeterminismSkipReason::UnsupportedFormat => {
+                    "Use a supported format for deterministic hash capture."
+                }
+                DeterminismSkipReason::ExplicitlyDisabled => {
+                    "Enable determinism hashing for production_strict validation."
+                }
+                DeterminismSkipReason::Unknown => {
+                    "Inspect validate audit warnings for additional details."
+                }
+            };
+            Err(EngineError::InvariantViolation(format!(
+                "determinism hash required in production_strict, but was skipped: {}. {hint}",
+                reason.code()
+            )))
+        }
+    }
+}
+
 // ─── Pipeline config ────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -825,7 +904,10 @@ impl UpscalePipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::{PipelineMetrics, enforce_metrics_invariants};
+    use super::{
+        DeterminismObserved, DeterminismPolicy, DeterminismSkipReason, PipelineMetrics,
+        enforce_determinism_policy, enforce_metrics_invariants,
+    };
     use rave_core::error::EngineError;
     use std::sync::atomic::Ordering;
 
@@ -859,6 +941,48 @@ mod tests {
 
         enforce_metrics_invariants(&metrics, false)
             .expect("default mode should not hard-fail invariant violations");
+    }
+
+    #[test]
+    fn determinism_policy_best_effort_allows_skipped_hashes() {
+        enforce_determinism_policy(
+            DeterminismPolicy::BestEffort,
+            DeterminismObserved {
+                hash_requested: true,
+                hash_available: false,
+                skip_reason: Some(DeterminismSkipReason::FeatureDisabled),
+            },
+        )
+        .expect("best-effort policy should allow skipped hashes");
+    }
+
+    #[test]
+    fn determinism_policy_require_hash_accepts_available_hashes() {
+        enforce_determinism_policy(
+            DeterminismPolicy::RequireHash,
+            DeterminismObserved {
+                hash_requested: true,
+                hash_available: true,
+                skip_reason: None,
+            },
+        )
+        .expect("required policy should pass when hashes are available");
+    }
+
+    #[test]
+    fn determinism_policy_require_hash_rejects_skipped_hashes() {
+        let err = enforce_determinism_policy(
+            DeterminismPolicy::RequireHash,
+            DeterminismObserved {
+                hash_requested: true,
+                hash_available: false,
+                skip_reason: Some(DeterminismSkipReason::FeatureDisabled),
+            },
+        )
+        .expect_err("required policy should reject skipped hashes");
+        let msg = err.to_string();
+        assert!(msg.contains("required"));
+        assert!(msg.contains("feature_disabled"));
     }
 }
 
