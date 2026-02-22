@@ -780,23 +780,29 @@ impl KernelTimer {
         let mut start: CUevent = std::ptr::null_mut();
         let mut end: CUevent = std::ptr::null_mut();
         // NOTE: we do NOT use CU_EVENT_DISABLE_TIMING here — we need timing.
-        unsafe {
-            sys::check_cu(sys::cuEventCreate(&mut start, 0), "cuEventCreate (start)")?;
-            sys::check_cu(sys::cuEventCreate(&mut end, 0), "cuEventCreate (end)")?;
-        }
+        // SAFETY: pointers refer to local CUevent out parameters.
+        let rc_start = unsafe { sys::cu_event_create(&mut start, 0)? };
+        // SAFETY: pointers refer to local CUevent out parameters.
+        let rc_end = unsafe { sys::cu_event_create(&mut end, 0)? };
+        sys::check_cu(rc_start, "cuEventCreate (start)")?;
+        sys::check_cu(rc_end, "cuEventCreate (end)")?;
         Ok(Self { start, end })
     }
 
     /// Record the start event on the given stream.
     pub fn record_start(&self, stream: &CudaStream) -> Result<()> {
         let raw = crate::stream::get_raw_stream(stream);
-        unsafe { sys::check_cu(sys::cuEventRecord(self.start, raw), "timer record start") }
+        // SAFETY: event/stream are valid CUDA handles managed by this pipeline.
+        let rc = unsafe { sys::cu_event_record(self.start, raw)? };
+        sys::check_cu(rc, "timer record start")
     }
 
     /// Record the end event on the given stream.
     pub fn record_end(&self, stream: &CudaStream) -> Result<()> {
         let raw = crate::stream::get_raw_stream(stream);
-        unsafe { sys::check_cu(sys::cuEventRecord(self.end, raw), "timer record end") }
+        // SAFETY: event/stream are valid CUDA handles managed by this pipeline.
+        let rc = unsafe { sys::cu_event_record(self.end, raw)? };
+        sys::check_cu(rc, "timer record end")
     }
 
     /// Query elapsed time in milliseconds.
@@ -805,29 +811,19 @@ impl KernelTimer {
     /// completed) before calling this.
     pub fn elapsed_ms(&self) -> Result<f32> {
         let mut ms: f32 = 0.0;
-        unsafe extern "C" {
-            fn cuEventElapsedTime(
-                pMilliseconds: *mut f32,
-                hStart: CUevent,
-                hEnd: CUevent,
-            ) -> sys::CUresult;
-        }
-        unsafe {
-            sys::check_cu(
-                cuEventElapsedTime(&mut ms, self.start, self.end),
-                "cuEventElapsedTime",
-            )?;
-        }
+        // SAFETY: ms points to valid storage; start/end are valid timer events.
+        let rc = unsafe { sys::cu_event_elapsed_time(&mut ms, self.start, self.end)? };
+        sys::check_cu(rc, "cuEventElapsedTime")?;
         Ok(ms)
     }
 }
 
 impl Drop for KernelTimer {
     fn drop(&mut self) {
-        unsafe {
-            sys::cuEventDestroy_v2(self.start);
-            sys::cuEventDestroy_v2(self.end);
-        }
+        // SAFETY: handles were created by cuEventCreate; best-effort cleanup on drop.
+        let _ = unsafe { sys::cu_event_destroy_v2(self.start) };
+        // SAFETY: handles were created by cuEventCreate; best-effort cleanup on drop.
+        let _ = unsafe { sys::cu_event_destroy_v2(self.end) };
     }
 }
 
