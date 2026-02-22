@@ -11,6 +11,51 @@
 use std::env;
 use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
+fn find_linux_cuda_root() -> Option<PathBuf> {
+    let mut candidates = vec![PathBuf::from("/usr/local/cuda")];
+    if let Ok(entries) = std::fs::read_dir("/usr/local") {
+        let mut versioned = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("cuda-"))
+            })
+            .collect::<Vec<_>>();
+        versioned.sort();
+        versioned.reverse();
+        candidates.extend(versioned);
+    }
+
+    candidates.into_iter().find(|root| root.exists())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn find_linux_cuda_root() -> Option<PathBuf> {
+    None
+}
+
+fn resolve_cuda_root() -> PathBuf {
+    if let Ok(cuda_path) = env::var("CUDA_PATH") {
+        return PathBuf::from(cuda_path);
+    }
+
+    if let Some(root) = find_linux_cuda_root() {
+        println!(
+            "cargo:warning=CUDA_PATH is unset; using discovered CUDA root at {}",
+            root.display()
+        );
+        return root;
+    }
+
+    panic!(
+        "CUDA_PATH env var must be set (e.g., C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.x) \
+or install CUDA under /usr/local/cuda(/cuda-*)"
+    );
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
@@ -18,10 +63,7 @@ fn main() {
 
     // ── CUDA Toolkit ────────────────────────────────────────────────────────
 
-    let cuda_path = env::var("CUDA_PATH")
-        .expect("CUDA_PATH env var must be set (e.g., C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.x)");
-
-    let cuda_root = PathBuf::from(cuda_path);
+    let cuda_root = resolve_cuda_root();
 
     let cuda_lib_dir = if cfg!(target_os = "windows") {
         cuda_root.join("lib").join("x64")
