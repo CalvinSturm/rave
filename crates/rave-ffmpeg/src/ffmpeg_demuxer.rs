@@ -825,11 +825,12 @@ mod tests {
                                         expected_out.push(50);
                                     }
 
-                                    for idx in 0..packet_count {
+                                    for (idx, send_retry) in
+                                        send_retries.iter().copied().enumerate().take(packet_count)
+                                    {
                                         let packet_id = (idx + 1) as u32;
                                         let output_id = 100 + idx as u8;
-                                        io.eagain_before_accept
-                                            .insert(packet_id, send_retries[idx]);
+                                        io.eagain_before_accept.insert(packet_id, send_retry);
                                         io.push_output_delayed(
                                             packet_id,
                                             pkt(output_id),
@@ -848,11 +849,10 @@ mod tests {
 
                                     let mut machine = BsfMachine::<u32>::default();
                                     let mut observed_out = Vec::<u8>::new();
-                                    loop {
-                                        match machine.poll(&mut io).expect("poll should succeed") {
-                                            Some(pkt) => observed_out.push(pkt.data[0]),
-                                            None => break,
-                                        }
+                                    while let Some(pkt) =
+                                        machine.poll(&mut io).expect("poll should succeed")
+                                    {
+                                        observed_out.push(pkt.data[0]);
                                     }
 
                                     assert_eq!(
