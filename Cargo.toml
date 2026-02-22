@@ -12,7 +12,7 @@ members = [
 exclude = ["legacy/**", "third_party/**", "target/**"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/CalvinSturm/rave"
@@ -20,12 +20,12 @@ homepage = "https://github.com/CalvinSturm/rave"
 authors = ["Calvin Sturm <calvinsturm@proton.me>"]
 
 [workspace.dependencies]
-rave-core = { version = "0.2.0", path = "crates/rave-core" }
-rave-cuda = { version = "0.2.0", path = "crates/rave-cuda" }
-rave-tensorrt = { version = "0.2.0", path = "crates/rave-tensorrt" }
-rave-nvcodec = { version = "0.2.0", path = "crates/rave-nvcodec" }
-rave-ffmpeg = { version = "0.2.0", path = "crates/rave-ffmpeg" }
-rave-pipeline = { version = "0.2.0", path = "crates/rave-pipeline" }
+rave-core = { version = "0.2.1", path = "crates/rave-core" }
+rave-cuda = { version = "0.2.1", path = "crates/rave-cuda" }
+rave-tensorrt = { version = "0.2.1", path = "crates/rave-tensorrt" }
+rave-nvcodec = { version = "0.2.1", path = "crates/rave-nvcodec" }
+rave-ffmpeg = { version = "0.2.1", path = "crates/rave-ffmpeg" }
+rave-pipeline = { version = "0.2.1", path = "crates/rave-pipeline" }
 cudarc = { version = "0.12", features = ["driver", "nvrtc", "cuda-12060"] }
 ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "signal", "time"] }

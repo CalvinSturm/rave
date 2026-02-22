@@ -826,7 +826,7 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
 name = "rave-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "rave-core",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "rave-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "cudarc",
@@ -853,7 +853,7 @@ dependencies = [
 
 [[package]]
 name = "rave-cuda"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cudarc",
  "rave-core",
@@ -862,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "rave-ffmpeg"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ffmpeg-sys-next",
  "rave-core",
@@ -871,7 +871,7 @@ dependencies = [
 
 [[package]]
 name = "rave-nvcodec"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cudarc",
  "rave-core",
@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "rave-pipeline"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "cudarc",
@@ -898,7 +898,7 @@ dependencies = [
 
 [[package]]
 name = "rave-tensorrt"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "cudarc",
