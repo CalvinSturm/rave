@@ -44,9 +44,11 @@ use rave_pipeline::{
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
 #[cfg(target_os = "linux")]
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, CString, c_char, c_void};
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 #[cfg(target_os = "linux")]
 use std::time::UNIX_EPOCH;
 
@@ -355,7 +357,7 @@ type CUdevice = i32;
 #[cfg(target_os = "linux")]
 const CUDA_SUCCESS: CUresult = 0;
 
-#[cfg_attr(target_os = "linux", link(name = "cuda"))]
+#[cfg(not(target_os = "linux"))]
 unsafe extern "C" {
     #[cfg(target_os = "linux")]
     fn cuInit(flags: u32) -> CUresult;
@@ -369,6 +371,104 @@ unsafe extern "C" {
     fn cuDeviceGetName(name: *mut c_char, len: i32, dev: CUdevice) -> CUresult;
     #[cfg(target_os = "linux")]
     fn cuDeviceTotalMem_v2(bytes: *mut usize, dev: CUdevice) -> CUresult;
+}
+
+#[cfg(target_os = "linux")]
+unsafe extern "C" {
+    fn dlopen(filename: *const c_char, flags: i32) -> *mut c_void;
+    fn dlerror() -> *const c_char;
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+}
+
+#[cfg(target_os = "linux")]
+const RTLD_NOW: i32 = 2;
+#[cfg(target_os = "linux")]
+const RTLD_GLOBAL: i32 = 0x100;
+
+#[cfg(target_os = "linux")]
+struct CudaDriverApi {
+    cu_init: unsafe extern "C" fn(u32) -> CUresult,
+    cu_driver_get_version: unsafe extern "C" fn(*mut i32) -> CUresult,
+    cu_device_get_count: unsafe extern "C" fn(*mut i32) -> CUresult,
+    cu_device_get: unsafe extern "C" fn(*mut CUdevice, i32) -> CUresult,
+    cu_device_get_name: unsafe extern "C" fn(*mut c_char, i32, CUdevice) -> CUresult,
+    cu_device_total_mem_v2: unsafe extern "C" fn(*mut usize, CUdevice) -> CUresult,
+}
+
+#[cfg(target_os = "linux")]
+static CUDA_DRIVER_API: OnceLock<std::result::Result<CudaDriverApi, String>> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+fn load_cuda_symbol<T>(handle: *mut c_void, name: &'static str) -> std::result::Result<T, String> {
+    let cname = CString::new(name).map_err(|_| format!("invalid CUDA symbol name: {name}"))?;
+    // SAFETY: handle is a valid dlopen handle and symbol name is NUL-terminated.
+    let ptr = unsafe { dlsym(handle, cname.as_ptr()) };
+    if ptr.is_null() {
+        // SAFETY: dlerror returns thread-local C string or null.
+        let err = unsafe {
+            let p = dlerror();
+            if p.is_null() {
+                "unknown dlsym error".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().to_string()
+            }
+        };
+        Err(format!("dlsym({name}) failed: {err}"))
+    } else {
+        // SAFETY: ptr points to function with signature T.
+        Ok(unsafe { std::mem::transmute_copy(&ptr) })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn init_cuda_driver_api() -> std::result::Result<CudaDriverApi, String> {
+    let mut handle = std::ptr::null_mut();
+    let mut last_err = "unknown dlopen error".to_string();
+    for candidate in ["libcuda.so.1", "libcuda.so"] {
+        let soname =
+            CString::new(candidate).map_err(|_| format!("invalid CUDA soname: {candidate}"))?;
+        // SAFETY: static soname and valid dlopen flags.
+        handle = unsafe { dlopen(soname.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
+        if !handle.is_null() {
+            break;
+        }
+        // SAFETY: dlerror returns thread-local C string or null.
+        last_err = unsafe {
+            let p = dlerror();
+            if p.is_null() {
+                "unknown dlopen error".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().to_string()
+            }
+        };
+    }
+
+    if handle.is_null() {
+        return Err(format!(
+            "dlopen(libcuda.so.1|libcuda.so) failed: {last_err}"
+        ));
+    }
+
+    Ok(CudaDriverApi {
+        cu_init: load_cuda_symbol(handle, "cuInit")?,
+        cu_driver_get_version: load_cuda_symbol(handle, "cuDriverGetVersion")?,
+        cu_device_get_count: load_cuda_symbol(handle, "cuDeviceGetCount")?,
+        cu_device_get: load_cuda_symbol(handle, "cuDeviceGet")?,
+        cu_device_get_name: load_cuda_symbol(handle, "cuDeviceGetName")?,
+        cu_device_total_mem_v2: load_cuda_symbol(handle, "cuDeviceTotalMem_v2")?,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn cuda_driver_api() -> Result<&'static CudaDriverApi> {
+    let api = CUDA_DRIVER_API.get_or_init(init_cuda_driver_api);
+    api.as_ref().map_err(|err| {
+        EngineError::Pipeline(format!(
+            "failed to load CUDA driver API: {err}. \
+Ensure NVIDIA driver libraries are installed and visible via LD_LIBRARY_PATH \
+(on WSL, prepend /usr/lib/wsl/lib)."
+        ))
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2483,8 +2583,9 @@ fn probe_all_json(driver_version: i32, rows: &[ProbeDeviceResult]) -> String {
 
 #[cfg(target_os = "linux")]
 fn enumerate_cuda_devices() -> Result<(i32, Vec<CudaDeviceInfo>)> {
-    // SAFETY: CUDA Driver API call with constant flags.
-    let rc_init = unsafe { cuInit(0) };
+    let api = cuda_driver_api()?;
+    // SAFETY: symbol resolved from CUDA driver with matching signature.
+    let rc_init = unsafe { (api.cu_init)(0) };
     if rc_init != CUDA_SUCCESS {
         return Err(EngineError::Pipeline(format!(
             "cuInit failed with rc={rc_init}; run scripts/run_cuda_probe.sh for diagnostics"
@@ -2493,7 +2594,7 @@ fn enumerate_cuda_devices() -> Result<(i32, Vec<CudaDeviceInfo>)> {
 
     let mut driver_version = -1i32;
     // SAFETY: valid out pointer.
-    let rc_drv = unsafe { cuDriverGetVersion(&mut driver_version as *mut i32) };
+    let rc_drv = unsafe { (api.cu_driver_get_version)(&mut driver_version as *mut i32) };
     if rc_drv != CUDA_SUCCESS {
         return Err(EngineError::Pipeline(format!(
             "cuDriverGetVersion failed with rc={rc_drv}"
@@ -2502,7 +2603,7 @@ fn enumerate_cuda_devices() -> Result<(i32, Vec<CudaDeviceInfo>)> {
 
     let mut count = 0i32;
     // SAFETY: valid out pointer.
-    let rc_count = unsafe { cuDeviceGetCount(&mut count as *mut i32) };
+    let rc_count = unsafe { (api.cu_device_get_count)(&mut count as *mut i32) };
     if rc_count != CUDA_SUCCESS {
         return Err(EngineError::Pipeline(format!(
             "cuDeviceGetCount failed with rc={rc_count}"
@@ -2513,7 +2614,7 @@ fn enumerate_cuda_devices() -> Result<(i32, Vec<CudaDeviceInfo>)> {
     for ordinal in 0..count {
         let mut dev = -1i32;
         // SAFETY: valid out pointer and ordinal within declared range.
-        let rc_get = unsafe { cuDeviceGet(&mut dev as *mut CUdevice, ordinal) };
+        let rc_get = unsafe { (api.cu_device_get)(&mut dev as *mut CUdevice, ordinal) };
         if rc_get != CUDA_SUCCESS {
             return Err(EngineError::Pipeline(format!(
                 "cuDeviceGet({ordinal}) failed with rc={rc_get}"
@@ -2522,7 +2623,8 @@ fn enumerate_cuda_devices() -> Result<(i32, Vec<CudaDeviceInfo>)> {
 
         let mut name_buf = [0 as c_char; 100];
         // SAFETY: valid output buffer and device handle.
-        let rc_name = unsafe { cuDeviceGetName(name_buf.as_mut_ptr(), name_buf.len() as i32, dev) };
+        let rc_name =
+            unsafe { (api.cu_device_get_name)(name_buf.as_mut_ptr(), name_buf.len() as i32, dev) };
         if rc_name != CUDA_SUCCESS {
             return Err(EngineError::Pipeline(format!(
                 "cuDeviceGetName({ordinal}) failed with rc={rc_name}"
@@ -2535,7 +2637,7 @@ fn enumerate_cuda_devices() -> Result<(i32, Vec<CudaDeviceInfo>)> {
 
         let mut total_mem = 0usize;
         // SAFETY: valid out pointer and device handle.
-        let rc_mem = unsafe { cuDeviceTotalMem_v2(&mut total_mem as *mut usize, dev) };
+        let rc_mem = unsafe { (api.cu_device_total_mem_v2)(&mut total_mem as *mut usize, dev) };
         if rc_mem != CUDA_SUCCESS {
             return Err(EngineError::Pipeline(format!(
                 "cuDeviceTotalMem_v2({ordinal}) failed with rc={rc_mem}"
