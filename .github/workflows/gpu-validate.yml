@@ -22,4 +22,4 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Validate Fixture (GPU Required)
-        run: cargo run -p rave-cli --bin rave -- validate --json --profile production_strict --fixture tests/fixtures/validate_production_strict.json
+        run: cargo run -p rave-cli --features audit-no-host-copies --bin rave -- validate --json --profile production_strict --fixture tests/fixtures/validate_production_strict.json
