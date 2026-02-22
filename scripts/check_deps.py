@@ -21,8 +21,8 @@ INTERNAL_CRATES: Set[str] = {
 ALLOWED_EDGES: Dict[str, Set[str]] = {
     "rave-core": set(),
     "rave-cuda": {"rave-core"},
-    "rave-tensorrt": {"rave-core", "rave-cuda"},
-    "rave-nvcodec": {"rave-core", "rave-cuda"},
+    "rave-tensorrt": {"rave-core"},
+    "rave-nvcodec": {"rave-core"},
     "rave-ffmpeg": {"rave-core"},
     "rave-pipeline": {
         "rave-core",
@@ -76,10 +76,54 @@ def evaluate(packages: Sequence[dict]) -> List[Tuple[str, str, str]]:
 
 
 def run_self_test() -> None:
+    valid_graph = [
+        {
+            "name": "rave-core",
+            "dependencies": [],
+        },
+        {
+            "name": "rave-cuda",
+            "dependencies": [{"name": "rave-core"}],
+        },
+        {
+            "name": "rave-tensorrt",
+            "dependencies": [{"name": "rave-core"}],
+        },
+        {
+            "name": "rave-nvcodec",
+            "dependencies": [{"name": "rave-core"}],
+        },
+        {
+            "name": "rave-pipeline",
+            "dependencies": [
+                {"name": "rave-core"},
+                {"name": "rave-cuda"},
+                {"name": "rave-tensorrt"},
+                {"name": "rave-nvcodec"},
+                {"name": "rave-ffmpeg"},
+            ],
+        },
+        {
+            "name": "rave-cli",
+            "dependencies": [{"name": "rave-core"}, {"name": "rave-pipeline"}],
+        },
+    ]
+    valid_violations = evaluate(valid_graph)
+    if valid_violations:
+        raise SystemExit("depcheck self-test failed: expected valid graph to pass")
+
     invalid_graph = [
         {
             "name": "rave-core",
             "dependencies": [],
+        },
+        {
+            "name": "rave-tensorrt",
+            "dependencies": [{"name": "rave-core"}, {"name": "rave-cuda"}],
+        },
+        {
+            "name": "rave-nvcodec",
+            "dependencies": [{"name": "rave-core"}, {"name": "rave-cuda"}],
         },
         {
             "name": "rave-ffmpeg",
@@ -87,12 +131,17 @@ def run_self_test() -> None:
         },
     ]
     violations = evaluate(invalid_graph)
-    if len(violations) != 1:
-        raise SystemExit("depcheck self-test failed: expected one forbidden edge")
-
-    source, target, _fix = violations[0]
-    if (source, target) != ("rave-ffmpeg", "rave-nvcodec"):
-        raise SystemExit("depcheck self-test failed: wrong forbidden edge result")
+    expected_forbidden = {
+        ("rave-tensorrt", "rave-cuda"),
+        ("rave-nvcodec", "rave-cuda"),
+        ("rave-ffmpeg", "rave-nvcodec"),
+    }
+    actual_forbidden = {(source, target) for source, target, _fix in violations}
+    if actual_forbidden != expected_forbidden:
+        raise SystemExit(
+            "depcheck self-test failed: forbidden edge set mismatch "
+            f"(expected={sorted(expected_forbidden)}, actual={sorted(actual_forbidden)})"
+        )
 
 
 def main(argv: Sequence[str]) -> int:
