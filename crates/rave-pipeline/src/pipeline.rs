@@ -65,7 +65,7 @@ use rave_core::codec_traits::{
 use rave_core::context::{GpuContext, PerfStage};
 use rave_core::error::{EngineError, Result};
 use rave_core::ffi_types::cudaVideoCodec;
-use rave_core::host_copy_audit::audit_device_texture;
+use rave_core::host_copy_audit::{audit_device_texture, require_host_copy_audit_if_strict};
 use rave_core::types::{FrameEnvelope, GpuTexture, PixelFormat};
 use rave_cuda::blur::{BlurRegion, FaceBlurConfig, FaceBlurEngine};
 use rave_cuda::kernels::{ModelPrecision, PreprocessKernels};
@@ -346,17 +346,11 @@ impl UpscalePipeline {
         B: UpscaleBackend + 'static,
         E: FrameEncoder,
     {
+        require_host_copy_audit_if_strict(self.config.strict_no_host_copies)?;
+
         #[cfg(feature = "audit-no-host-copies")]
         let _audit_guard =
             rave_core::host_copy_audit::push_strict_mode(self.config.strict_no_host_copies);
-
-        #[cfg(not(feature = "audit-no-host-copies"))]
-        if self.config.strict_no_host_copies {
-            warn!(
-                "PipelineConfig.strict_no_host_copies=true ignored because \
-                 rave-pipeline was built without feature `audit-no-host-copies`"
-            );
-        }
 
         let (tx_decoded, rx_decoded) = mpsc::channel::<DecodedFrame>(self.config.decoded_capacity);
         let (tx_preprocessed, rx_preprocessed) =
@@ -563,6 +557,7 @@ impl UpscalePipeline {
         contract: RunContract,
     ) -> Result<PipelineReport> {
         graph.validate()?;
+        require_host_copy_audit_if_strict(profile.strict_no_host_copies())?;
 
         if !input.exists() {
             return Err(EngineError::Pipeline(format!(
@@ -580,13 +575,6 @@ impl UpscalePipeline {
                 "Model file not found: {}",
                 enhance_config.model_path.display()
             )));
-        }
-
-        #[cfg(not(feature = "audit-no-host-copies"))]
-        if profile.strict_no_host_copies() {
-            return Err(EngineError::InvariantViolation(
-                "ProductionStrict requires crate feature `audit-no-host-copies`".into(),
-            ));
         }
 
         if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {

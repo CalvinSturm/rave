@@ -12,6 +12,7 @@ use rave_core::codec_traits::{BitstreamSink, BitstreamSource};
 use rave_core::context::GpuContext;
 use rave_core::error::{EngineError, Result};
 use rave_core::ffi_types::cudaVideoCodec;
+use rave_core::host_copy_audit::require_host_copy_audit_if_strict;
 use rave_cuda::kernels::{ModelPrecision, PreprocessKernels};
 use rave_ffmpeg::ffmpeg_demuxer::FfmpegDemuxer;
 use rave_ffmpeg::ffmpeg_muxer::FfmpegMuxer;
@@ -58,6 +59,7 @@ pub struct RuntimeRequest {
     pub device: usize,
     pub vram_limit_mib: Option<usize>,
     pub strict_vram_limit: bool,
+    pub strict_no_host_copies: bool,
     pub decode_cap: Option<usize>,
     pub preprocess_cap: Option<usize>,
     pub upscale_cap: Option<usize>,
@@ -129,6 +131,8 @@ pub fn resolve_input(
 }
 
 pub async fn prepare_runtime(request: &RuntimeRequest) -> Result<RuntimeSetup> {
+    require_host_copy_audit_if_strict(request.strict_no_host_copies)?;
+
     let precision = parse_precision(&request.precision)?;
 
     let ctx = GpuContext::new(request.device)?;

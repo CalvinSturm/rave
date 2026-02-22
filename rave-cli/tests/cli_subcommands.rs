@@ -151,7 +151,7 @@ fn validate_help_lists_profile_and_graph_flags() {
 #[test]
 fn validate_json_without_input_is_single_schema_object() {
     let output = Command::new(env!("CARGO_BIN_EXE_rave"))
-        .args(["validate", "--json"])
+        .args(["validate", "--profile", "dev", "--json"])
         .output()
         .expect("run rave validate --json");
 
@@ -168,6 +168,17 @@ fn validate_json_without_input_is_single_schema_object() {
         value.get("command").and_then(|v| v.as_str()),
         Some("validate"),
         "missing command=validate field"
+    );
+    assert!(
+        value
+            .get("host_copy_audit_enabled")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "missing boolean host_copy_audit_enabled field"
+    );
+    assert!(
+        value.get("host_copy_audit_disable_reason").is_some(),
+        "missing host_copy_audit_disable_reason field"
     );
 }
 

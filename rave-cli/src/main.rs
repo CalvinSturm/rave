@@ -21,6 +21,9 @@ use rave_core::codec_traits::FrameEncoder;
 use rave_core::context::GpuContext;
 use rave_core::error::{EngineError, Result};
 use rave_core::ffi_types::cudaVideoCodec;
+use rave_core::host_copy_audit::{
+    HostCopyAuditStatus, host_copy_audit_status, require_host_copy_audit_if_strict,
+};
 use rave_core::types::FrameEnvelope;
 use rave_pipeline::pipeline::{PipelineConfig, PipelineMetrics, UpscalePipeline};
 use rave_pipeline::runtime::{
@@ -905,6 +908,8 @@ async fn run_upscale(args: UpscaleArgs) -> Result<()> {
         return Ok(());
     }
 
+    enforce_strict_host_copy_audit_for_profile(args.shared.profile)?;
+
     if mock_run_enabled() {
         return run_upscale_mock(args, resolved).await;
     }
@@ -1011,6 +1016,8 @@ async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
         emit_benchmark_output(&summary, args.json_out.as_deref(), emit_json_stdout)?;
         return Ok(());
     }
+
+    enforce_strict_host_copy_audit_for_profile(args.shared.profile)?;
 
     if mock_run_enabled() {
         return run_benchmark_mock(args, emit_json_stdout).await;
@@ -1254,6 +1261,8 @@ struct ValidateSummary {
     determinism_hash_sample: Option<String>,
     determinism_hash_skipped: Option<bool>,
     determinism_hash_skip_reason: Option<String>,
+    host_copy_audit_enabled: bool,
+    host_copy_audit_disable_reason: Option<String>,
     max_infer_us: f64,
     peak_vram_mb: usize,
     frames_decoded: u64,
@@ -1264,11 +1273,22 @@ struct ValidateSummary {
 impl ValidateSummary {
     fn to_human(&self) -> String {
         let model = self.model_path.as_deref().unwrap_or("n/a");
+        let host_copy_audit = if self.host_copy_audit_enabled {
+            "enabled".to_string()
+        } else {
+            format!(
+                "disabled({})",
+                self.host_copy_audit_disable_reason
+                    .as_deref()
+                    .unwrap_or("unknown")
+            )
+        };
         if self.skipped {
             return format!(
-                "validate: skipped profile={} model={} warnings={}",
+                "validate: skipped profile={} model={} host_copy_audit={} warnings={}",
                 profile_label(self.profile),
                 model,
+                host_copy_audit,
                 self.warnings.join(" | ")
             );
         }
@@ -1291,13 +1311,14 @@ impl ValidateSummary {
             "n/a".to_string()
         };
         format!(
-            "validate: ok={} profile={} model={} runs={} determinism={} determinism_hash={} max_infer_us={:.3} peak_vram_mb={} frames_decoded={} frames_encoded={} warnings={}",
+            "validate: ok={} profile={} model={} runs={} determinism={} determinism_hash={} host_copy_audit={} max_infer_us={:.3} peak_vram_mb={} frames_decoded={} frames_encoded={} warnings={}",
             self.ok,
             profile_label(self.profile),
             model,
             self.runs,
             determinism,
             determinism_hash,
+            host_copy_audit,
             self.max_infer_us,
             self.peak_vram_mb,
             self.frames_decoded,
@@ -1340,8 +1361,13 @@ impl ValidateSummary {
             .as_ref()
             .map(|v| json_string(v))
             .unwrap_or_else(|| "null".to_string());
+        let host_copy_audit_disable_reason = self
+            .host_copy_audit_disable_reason
+            .as_ref()
+            .map(|v| json_string(v))
+            .unwrap_or_else(|| "null".to_string());
         format!(
-            "{{\"schema_version\":{},\"command\":\"validate\",\"ok\":{},\"skipped\":{},\"profile\":{},\"model_path\":{},\"runs\":{},\"determinism_equal\":{},\"determinism_hash_count\":{},\"determinism_hash_sample\":{},\"determinism_hash_skipped\":{},\"determinism_hash_skip_reason\":{},\"max_infer_us\":{},\"peak_vram_mb\":{},\"frames\":{{\"decoded\":{},\"encoded\":{}}},\"warnings\":[{}]}}",
+            "{{\"schema_version\":{},\"command\":\"validate\",\"ok\":{},\"skipped\":{},\"profile\":{},\"model_path\":{},\"runs\":{},\"determinism_equal\":{},\"determinism_hash_count\":{},\"determinism_hash_sample\":{},\"determinism_hash_skipped\":{},\"determinism_hash_skip_reason\":{},\"host_copy_audit_enabled\":{},\"host_copy_audit_disable_reason\":{},\"max_infer_us\":{},\"peak_vram_mb\":{},\"frames\":{{\"decoded\":{},\"encoded\":{}}},\"warnings\":[{}]}}",
             JSON_SCHEMA_VERSION,
             self.ok,
             self.skipped,
@@ -1353,6 +1379,8 @@ impl ValidateSummary {
             determinism_hash_sample,
             determinism_hash_skipped,
             determinism_hash_skip_reason,
+            self.host_copy_audit_enabled,
+            host_copy_audit_disable_reason,
             json_number(self.max_infer_us),
             self.peak_vram_mb,
             self.frames_decoded,
@@ -1501,6 +1529,27 @@ fn strict_pipeline_flags_for_profile(profile: ProfileArg) -> (bool, bool) {
     (strict.strict_no_host_copies, strict.strict_invariants)
 }
 
+fn strict_no_host_copies_for_profile(profile: ProfileArg) -> bool {
+    strict_settings_for_profile_arg(profile).strict_no_host_copies
+}
+
+fn enforce_strict_host_copy_audit_for_profile(profile: ProfileArg) -> Result<()> {
+    require_host_copy_audit_if_strict(strict_no_host_copies_for_profile(profile))
+}
+
+fn host_copy_audit_summary_fields_from_status(
+    status: HostCopyAuditStatus,
+) -> (bool, Option<String>) {
+    match status {
+        HostCopyAuditStatus::Enabled => (true, None),
+        HostCopyAuditStatus::Disabled { reason } => (false, Some(reason.code().to_string())),
+    }
+}
+
+fn host_copy_audit_summary_fields() -> (bool, Option<String>) {
+    host_copy_audit_summary_fields_from_status(host_copy_audit_status())
+}
+
 fn determinism_policy_for_validate(
     profile: ProfileArg,
     allow_hash_skipped: bool,
@@ -1541,6 +1590,8 @@ fn emit_validate_skip(
     model_path: Option<&Path>,
     warning: String,
 ) {
+    let (host_copy_audit_enabled, host_copy_audit_disable_reason) =
+        host_copy_audit_summary_fields();
     let summary = ValidateSummary {
         ok: true,
         skipped: true,
@@ -1552,6 +1603,8 @@ fn emit_validate_skip(
         determinism_hash_sample: None,
         determinism_hash_skipped: None,
         determinism_hash_skip_reason: None,
+        host_copy_audit_enabled,
+        host_copy_audit_disable_reason,
         max_infer_us: 0.0,
         peak_vram_mb: 0,
         frames_decoded: 0,
@@ -1591,6 +1644,7 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
     );
 
     if mock_run_enabled() {
+        enforce_strict_host_copy_audit_for_profile(args.profile)?;
         return run_validate_mock(args, progress_mode).await;
     }
 
@@ -1608,6 +1662,7 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
     {
         profile_arg = parse_profile_arg(raw_profile)?;
     }
+    enforce_strict_host_copy_audit_for_profile(profile_arg)?;
     let profile = profile_to_preset(profile_arg);
 
     let input = args
@@ -1859,6 +1914,8 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
             "validate determinism failed: stage checksums differ across runs".into(),
         ));
     }
+    let (host_copy_audit_enabled, host_copy_audit_disable_reason) =
+        host_copy_audit_summary_fields();
 
     let summary = ValidateSummary {
         ok: true,
@@ -1885,6 +1942,8 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
             None
         },
         determinism_hash_skip_reason: hash_skip_reason.map(|reason| reason.code().to_string()),
+        host_copy_audit_enabled,
+        host_copy_audit_disable_reason,
         max_infer_us: infer_avg,
         peak_vram_mb,
         frames_decoded: first.frames_decoded,
@@ -1942,6 +2001,8 @@ async fn run_validate_mock(args: ValidateArgs, progress_mode: ProgressMode) -> R
         ));
     }
 
+    let (host_copy_audit_enabled, host_copy_audit_disable_reason) =
+        host_copy_audit_summary_fields();
     let summary = ValidateSummary {
         ok: true,
         skipped: false,
@@ -1953,6 +2014,8 @@ async fn run_validate_mock(args: ValidateArgs, progress_mode: ProgressMode) -> R
         determinism_hash_sample: None,
         determinism_hash_skipped: None,
         determinism_hash_skip_reason: None,
+        host_copy_audit_enabled,
+        host_copy_audit_disable_reason,
         max_infer_us: 1800.0,
         peak_vram_mb: 0,
         frames_decoded: 2,
@@ -2468,7 +2531,7 @@ fn benchmark_output_path(args: &BenchmarkArgs) -> PathBuf {
 
 async fn prepare_runtime(shared: &SharedVideoArgs, input: ResolvedInput) -> Result<RuntimeSetup> {
     let device = shared.device.unwrap_or(0) as usize;
-    let strict_vram_limit = strict_vram_limit_for_profile(shared.profile);
+    let strict = strict_settings_for_profile_arg(shared.profile);
     pipeline_prepare_runtime(&RuntimeRequest {
         model_path: shared.model.clone(),
         precision: shared
@@ -2477,7 +2540,8 @@ async fn prepare_runtime(shared: &SharedVideoArgs, input: ResolvedInput) -> Resu
             .unwrap_or_else(|| "fp32".to_string()),
         device,
         vram_limit_mib: shared.vram_limit,
-        strict_vram_limit,
+        strict_vram_limit: strict.strict_vram_limit,
+        strict_no_host_copies: strict.strict_no_host_copies,
         decode_cap: shared.decode_cap,
         preprocess_cap: shared.preprocess_cap,
         upscale_cap: shared.upscale_cap,
@@ -2720,6 +2784,39 @@ mod tests {
             determinism_policy_for_validate(ProfileArg::ProductionStrict, true),
             strict.determinism_policy
         );
+    }
+
+    #[test]
+    fn host_copy_audit_summary_fields_map_status_codes() {
+        assert_eq!(
+            host_copy_audit_summary_fields_from_status(HostCopyAuditStatus::Enabled),
+            (true, None)
+        );
+        assert_eq!(
+            host_copy_audit_summary_fields_from_status(HostCopyAuditStatus::Disabled {
+                reason: rave_core::host_copy_audit::HostCopyAuditDisableReason::FeatureDisabled,
+            }),
+            (false, Some("feature_disabled".to_string()))
+        );
+    }
+
+    #[test]
+    fn strict_host_copy_guard_follows_runtime_audit_status() {
+        enforce_strict_host_copy_audit_for_profile(ProfileArg::Dev)
+            .expect("dev profile should not require strict host-copy auditing");
+
+        let strict = enforce_strict_host_copy_audit_for_profile(ProfileArg::ProductionStrict);
+        match host_copy_audit_status() {
+            HostCopyAuditStatus::Enabled => {
+                strict.expect("production_strict should pass when audit is enabled");
+            }
+            HostCopyAuditStatus::Disabled { reason } => {
+                let err = strict.expect_err(
+                    "production_strict should fail when host-copy auditing is unavailable",
+                );
+                assert!(err.to_string().contains(reason.code()));
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]

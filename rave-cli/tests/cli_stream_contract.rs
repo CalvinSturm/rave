@@ -170,6 +170,8 @@ fn validate_json_stdout_is_clean_and_stderr_has_progress() {
     let output = mock_command()
         .args([
             "validate",
+            "--profile",
+            "dev",
             "--input",
             input.to_str().expect("utf8 input"),
             "--model",
@@ -298,4 +300,56 @@ fn upscale_json_rejects_micro_batching_in_mock_mode() {
         error.contains("not implemented"),
         "unexpected error message: {error}"
     );
+}
+
+#[test]
+fn validate_mock_production_strict_enforces_host_copy_audit_availability() {
+    let output = mock_command()
+        .args([
+            "validate",
+            "--profile",
+            "production_strict",
+            "--json",
+            "--progress",
+            "jsonl",
+        ])
+        .output()
+        .expect("run mock rave validate production_strict");
+
+    let strict_ok = cfg!(feature = "audit-no-host-copies");
+    assert_eq!(
+        output.status.success(),
+        strict_ok,
+        "unexpected strict validate status (stdout={}, stderr={})",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_single_stdout_json(&output.stdout, "validate", strict_ok);
+    assert_stderr_has_progress_jsonl(&output.stderr, "validate");
+
+    let stdout_s = String::from_utf8_lossy(&output.stdout);
+    let lines = nonempty_lines(&stdout_s);
+    let value: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("stdout JSON should parse");
+    if strict_ok {
+        assert_eq!(
+            value
+                .get("host_copy_audit_enabled")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(
+            value
+                .get("host_copy_audit_disable_reason")
+                .is_some_and(|v| v.is_null()),
+            "disable reason should be null when audit is enabled: {value}"
+        );
+    } else {
+        let error = value
+            .get("error")
+            .and_then(|v| v.as_str())
+            .expect("error field must be present");
+        assert!(error.contains("strict no-host-copies"));
+        assert!(error.contains("feature_disabled"));
+    }
 }

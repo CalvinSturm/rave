@@ -15,6 +15,29 @@ static STRICT_MODE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "audit-no-host-copies")]
 static WARNED_ONCE: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostCopyAuditStatus {
+    Enabled,
+    Disabled { reason: HostCopyAuditDisableReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostCopyAuditDisableReason {
+    FeatureDisabled,
+    RuntimeDisabled,
+    Unavailable,
+}
+
+impl HostCopyAuditDisableReason {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::FeatureDisabled => "feature_disabled",
+            Self::RuntimeDisabled => "runtime_disabled",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// Restores the previous strict mode value when dropped.
 pub struct StrictModeGuard {
     #[cfg(feature = "audit-no-host-copies")]
@@ -57,6 +80,55 @@ pub fn is_strict_mode() -> bool {
     {
         false
     }
+}
+
+pub fn host_copy_audit_status() -> HostCopyAuditStatus {
+    #[cfg(feature = "audit-no-host-copies")]
+    {
+        HostCopyAuditStatus::Enabled
+    }
+
+    #[cfg(not(feature = "audit-no-host-copies"))]
+    {
+        HostCopyAuditStatus::Disabled {
+            reason: HostCopyAuditDisableReason::FeatureDisabled,
+        }
+    }
+}
+
+fn require_host_copy_audit_if_strict_with_status(
+    strict: bool,
+    status: HostCopyAuditStatus,
+) -> Result<()> {
+    if !strict {
+        return Ok(());
+    }
+
+    match status {
+        HostCopyAuditStatus::Enabled => Ok(()),
+        HostCopyAuditStatus::Disabled { reason } => {
+            let hint = match reason {
+                HostCopyAuditDisableReason::FeatureDisabled => {
+                    "Rebuild with feature `audit-no-host-copies`."
+                }
+                HostCopyAuditDisableReason::RuntimeDisabled => {
+                    "Enable host-copy auditing at runtime."
+                }
+                HostCopyAuditDisableReason::Unavailable => {
+                    "Ensure the host-copy audit subsystem is available."
+                }
+            };
+            Err(EngineError::InvariantViolation(format!(
+                "strict no-host-copies requested but host-copy auditing is disabled: {}. {}",
+                reason.code(),
+                hint
+            )))
+        }
+    }
+}
+
+pub fn require_host_copy_audit_if_strict(strict: bool) -> Result<()> {
+    require_host_copy_audit_if_strict_with_status(strict, host_copy_audit_status())
 }
 
 /// Record a suspicious host-copy path.
@@ -236,7 +308,11 @@ mod tests {
 
 #[cfg(test)]
 mod sentinel_tests {
-    use super::audit_device_ptr_impl;
+    use super::{
+        HostCopyAuditDisableReason, HostCopyAuditStatus, audit_device_ptr_impl,
+        host_copy_audit_status, require_host_copy_audit_if_strict,
+        require_host_copy_audit_if_strict_with_status,
+    };
 
     #[test]
     fn device_ptr_audit_disabled_is_noop() {
@@ -271,5 +347,50 @@ mod sentinel_tests {
             true,
         )
         .expect("strict audit should accept non-zero pointers");
+    }
+
+    #[test]
+    fn strict_host_copy_requirement_allows_non_strict_runs() {
+        require_host_copy_audit_if_strict_with_status(
+            false,
+            HostCopyAuditStatus::Disabled {
+                reason: HostCopyAuditDisableReason::FeatureDisabled,
+            },
+        )
+        .expect("non-strict runs must not require audit availability");
+    }
+
+    #[test]
+    fn strict_host_copy_requirement_rejects_feature_disabled_audit() {
+        let err = require_host_copy_audit_if_strict_with_status(
+            true,
+            HostCopyAuditStatus::Disabled {
+                reason: HostCopyAuditDisableReason::FeatureDisabled,
+            },
+        )
+        .expect_err("strict mode must reject disabled audit");
+        let msg = err.to_string();
+        assert!(msg.contains("strict no-host-copies"));
+        assert!(msg.contains("feature_disabled"));
+    }
+
+    #[test]
+    fn strict_host_copy_requirement_accepts_enabled_audit() {
+        require_host_copy_audit_if_strict_with_status(true, HostCopyAuditStatus::Enabled)
+            .expect("strict mode should pass when audit is enabled");
+    }
+
+    #[test]
+    fn strict_host_copy_requirement_uses_runtime_status() {
+        let result = require_host_copy_audit_if_strict(true);
+        match host_copy_audit_status() {
+            HostCopyAuditStatus::Enabled => {
+                result.expect("strict mode should pass when audit is enabled");
+            }
+            HostCopyAuditStatus::Disabled { reason } => {
+                let err = result.expect_err("strict mode should fail when audit is disabled");
+                assert!(err.to_string().contains(reason.code()));
+            }
+        }
     }
 }
