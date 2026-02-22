@@ -871,9 +871,11 @@ mod tests {
                                     );
 
                                     let mut expected_send_log = Vec::<SendInput<u32>>::new();
-                                    for idx in 0..packet_count {
+                                    for (idx, send_retry) in
+                                        send_retries.iter().copied().enumerate().take(packet_count)
+                                    {
                                         let packet_id = (idx + 1) as u32;
-                                        for _ in 0..=send_retries[idx] {
+                                        for _ in 0..=send_retry {
                                             expected_send_log.push(SendInput::Packet(packet_id));
                                         }
                                     }
