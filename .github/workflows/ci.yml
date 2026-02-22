@@ -17,6 +17,9 @@ jobs:
       - name: Check crate boundaries
         run: ./scripts/check_deps.sh
 
+      - name: Docs lint
+        run: ./scripts/check_docs.sh
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
