@@ -466,14 +466,6 @@ const RTLD_LOCAL: i32 = 0;
 #[cfg(target_os = "linux")]
 const RTLD_GLOBAL: i32 = 0x100;
 
-#[cfg(target_os = "linux")]
-#[derive(Clone, Copy)]
-enum OrtProviderKind {
-    Cuda,
-    TensorRt,
-}
-
-#[cfg(not(target_os = "linux"))]
 #[derive(Clone, Copy)]
 enum OrtProviderKind {
     Cuda,
@@ -483,8 +475,8 @@ enum OrtProviderKind {
 #[cfg(target_os = "linux")]
 type ProviderCandidate = (PathBuf, &'static str);
 
-#[cfg(target_os = "linux")]
 impl OrtProviderKind {
+    #[cfg(target_os = "linux")]
     fn soname(self) -> &'static str {
         match self {
             OrtProviderKind::Cuda => "libonnxruntime_providers_cuda.so",
@@ -492,16 +484,6 @@ impl OrtProviderKind {
         }
     }
 
-    fn label(self) -> &'static str {
-        match self {
-            OrtProviderKind::Cuda => "providers_cuda",
-            OrtProviderKind::TensorRt => "providers_tensorrt",
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-impl OrtProviderKind {
     fn label(self) -> &'static str {
         match self {
             OrtProviderKind::Cuda => "providers_cuda",
@@ -990,39 +972,42 @@ Set ORT_DYLIB_PATH or ORT_LIB_LOCATION to a valid provider directory and re-run 
     /// When ORT is linked statically, TensorRT provider expects `Provider_GetHost`
     /// from `libonnxruntime_providers_shared.so` to already be present in the process.
     /// Preloading this bridge with `RTLD_GLOBAL` satisfies that symbol before TRT EP load.
-    #[cfg(target_os = "linux")]
     fn preload_ort_provider_pair(kind: OrtProviderKind) -> Result<()> {
-        let (dir, source) = Self::resolve_ort_provider_dir(kind)?;
-        let shared = dir.join("libonnxruntime_providers_shared.so");
-        let provider = dir.join(kind.soname());
+        #[cfg(target_os = "linux")]
+        {
+            let (dir, source) = Self::resolve_ort_provider_dir(kind)?;
+            let shared = dir.join("libonnxruntime_providers_shared.so");
+            let provider = dir.join(kind.soname());
 
-        Self::dlopen_path(&shared, RTLD_NOW | RTLD_GLOBAL).map_err(|e| {
-            EngineError::ModelMetadata(format!(
-                "Failed loading providers_shared from {} ({e}). \
+            Self::dlopen_path(&shared, RTLD_NOW | RTLD_GLOBAL).map_err(|e| {
+                EngineError::ModelMetadata(format!(
+                    "Failed loading providers_shared from {} ({e}). \
 Ensure ORT_DYLIB_PATH/ORT_LIB_LOCATION points to a valid ORT cache dir.",
-                shared.display()
-            ))
-        })?;
+                    shared.display()
+                ))
+            })?;
 
-        info!(
-            path = %provider.display(),
-            provider = kind.label(),
-            "Skipping explicit provider dlopen; relying on startup LD_LIBRARY_PATH + ORT registration"
-        );
+            info!(
+                path = %provider.display(),
+                provider = kind.label(),
+                "Skipping explicit provider dlopen; relying on startup LD_LIBRARY_PATH + ORT registration"
+            );
 
-        info!(
-            source,
-            dir = %dir.display(),
-            provider = kind.label(),
-            path = %provider.display(),
-            "ORT provider pair prepared (providers_shared preloaded, provider path configured)"
-        );
-        Ok(())
-    }
+            info!(
+                source,
+                dir = %dir.display(),
+                provider = kind.label(),
+                path = %provider.display(),
+                "ORT provider pair prepared (providers_shared preloaded, provider path configured)"
+            );
+            return Ok(());
+        }
 
-    #[cfg(not(target_os = "linux"))]
-    fn preload_ort_provider_pair(_kind: OrtProviderKind) -> Result<()> {
-        Ok(())
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = kind;
+            Ok(())
+        }
     }
 
     #[cfg(all(target_os = "linux", test))]
