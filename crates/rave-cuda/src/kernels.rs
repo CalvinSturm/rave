@@ -276,14 +276,13 @@ impl PreprocessKernels {
     /// Returns [`EngineError::Cuda`] if module loading fails.
     pub fn compile(device: &Arc<CudaDevice>) -> Result<Self> {
         let mut extra_nvrtc_options = Vec::new();
-        #[cfg(unix)]
-        let resolved_include_dir = resolve_cuda_include_dir_unix();
-        #[cfg(not(unix))]
-        let resolved_include_dir: Option<PathBuf> = None;
+        let resolved_include_dir = resolve_cuda_include_dir();
 
-        #[cfg(unix)]
         if let Some(include_dir) = resolved_include_dir.as_ref() {
+            // NVRTC accepts both -I<dir> and --include-path=<dir>.
+            // Keep both to improve portability across platform-specific drivers.
             extra_nvrtc_options.push(format!("-I{}", include_dir.display()));
+            extra_nvrtc_options.push(format!("--include-path={}", include_dir.display()));
         }
 
         let mut final_nvrtc_options = vec![
@@ -626,16 +625,15 @@ impl PreprocessKernels {
     }
 }
 
-#[cfg(unix)]
-fn resolve_cuda_include_dir_unix() -> Option<PathBuf> {
+fn resolve_cuda_include_dir() -> Option<PathBuf> {
     let cuda_path = std::env::var("CUDA_PATH").ok();
     let cuda_home = std::env::var("CUDA_HOME").ok();
-    resolve_cuda_include_dir_unix_with(cuda_path.as_deref(), cuda_home.as_deref(), |candidate| {
+    resolve_cuda_include_dir_with(cuda_path.as_deref(), cuda_home.as_deref(), |candidate| {
         candidate.is_dir()
     })
 }
 
-fn resolve_cuda_include_dir_unix_with<F>(
+fn resolve_cuda_include_dir_with<F>(
     cuda_path: Option<&str>,
     cuda_home: Option<&str>,
     exists: F,
@@ -650,18 +648,35 @@ where
     if let Some(path) = cuda_home {
         candidates.push(PathBuf::from(path).join("include"));
     }
-    candidates.push(PathBuf::from("/usr/local/cuda/include"));
+    #[cfg(unix)]
+    {
+        candidates.push(PathBuf::from("/usr/local/cuda/include"));
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(entries) =
+            std::fs::read_dir(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")
+        {
+            let mut include_dirs = entries
+                .flatten()
+                .map(|e| e.path().join("include"))
+                .collect::<Vec<_>>();
+            include_dirs.sort();
+            include_dirs.reverse();
+            candidates.extend(include_dirs);
+        }
+    }
 
     candidates.into_iter().find(|candidate| exists(candidate))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_cuda_include_dir_unix_with;
+    use super::resolve_cuda_include_dir_with;
 
     #[test]
     fn prefers_cuda_path_include_when_present() {
-        let resolved = resolve_cuda_include_dir_unix_with(
+        let resolved = resolve_cuda_include_dir_with(
             Some("/opt/cuda-from-path"),
             Some("/opt/cuda-from-home"),
             |p| p == std::path::Path::new("/opt/cuda-from-path/include"),
@@ -674,7 +689,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_cuda_home_include_when_cuda_path_missing() {
-        let resolved = resolve_cuda_include_dir_unix_with(
+        let resolved = resolve_cuda_include_dir_with(
             Some("/opt/cuda-from-path"),
             Some("/opt/cuda-from-home"),
             |p| p == std::path::Path::new("/opt/cuda-from-home/include"),
@@ -685,10 +700,11 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn falls_back_to_usr_local_cuda_include() {
         let resolved =
-            resolve_cuda_include_dir_unix_with(Some("/missing/path"), Some("/missing/home"), |p| {
+            resolve_cuda_include_dir_with(Some("/missing/path"), Some("/missing/home"), |p| {
                 p == std::path::Path::new("/usr/local/cuda/include")
             });
         assert_eq!(
