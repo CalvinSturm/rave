@@ -1,0 +1,36 @@
+name: Windows GPU CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows-gpu-build-test:
+    runs-on: [self-hosted, windows, gpu]
+    env:
+      RAVE_CI_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build workspace
+        shell: pwsh
+        run: .\scripts\build.ps1 --workspace
+
+      - name: Build release CLI
+        shell: pwsh
+        run: .\scripts\build.ps1 -- -p rave-cli --bin rave --release
+
+      - name: Test workspace
+        shell: pwsh
+        run: .\scripts\test.ps1
+
+      - name: Validate harness (best effort)
+        shell: pwsh
+        env:
+          RAVE_MOCK_RUN: "1"
+        run: cargo run -p rave-cli --features audit-no-host-copies --bin rave -- validate --json --best-effort --profile production_strict --fixture tests/fixtures/validate_production_strict.json
