@@ -377,6 +377,14 @@ pub const NV_ENC_PRESET_P7_GUID: GUID = GUID {
     Data4: [0x93, 0x1B, 0x53, 0xE5, 0x6F, 0x78, 0x84, 0x3B],
 };
 
+/// Balanced quality/performance preset GUID (P4).
+pub const NV_ENC_PRESET_P4_GUID: GUID = GUID {
+    Data1: 0x90A7B826,
+    Data2: 0xDF06,
+    Data3: 0x4862,
+    Data4: [0xB9, 0xD2, 0xCD, 0x6D, 0x73, 0xA0, 0x86, 0x81],
+};
+
 /// H.265 Main profile GUID.
 pub const NV_ENC_HEVC_PROFILE_MAIN_GUID: GUID = GUID {
     Data1: 0xB514C39A,

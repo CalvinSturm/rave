@@ -580,6 +580,29 @@ impl TensorRtBackend {
         self.selected_provider.get().map(String::as_str)
     }
 
+    fn infer_scale_from_name(name: &str) -> Option<u32> {
+        let lower = name.to_ascii_lowercase();
+        let bytes = lower.as_bytes();
+        for i in 0..bytes.len() {
+            if bytes[i] != b'x' {
+                continue;
+            }
+            if i > 0 && bytes[i - 1].is_ascii_digit() {
+                let d = (bytes[i - 1] - b'0') as u32;
+                if d >= 2 {
+                    return Some(d);
+                }
+            }
+            if i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+                let d = (bytes[i + 1] - b'0') as u32;
+                if d >= 2 {
+                    return Some(d);
+                }
+            }
+        }
+        None
+    }
+
     fn extract_metadata(session: &Session) -> Result<ModelMetadata> {
         let inputs = session.inputs();
         let outputs = session.outputs();
@@ -638,11 +661,26 @@ impl TensorRtBackend {
         let oh = output_dims[2];
         let ow = output_dims[3];
 
+        let name = session
+            .metadata()
+            .map(|m| m.name().unwrap_or("unknown".to_string()))
+            .unwrap_or_else(|_| "unknown".to_string());
+
         let scale = if ih > 0 && oh > 0 && iw > 0 && ow > 0 {
             (oh / ih) as u32
+        } else if let Some(inferred) = Self::infer_scale_from_name(&name) {
+            warn!(
+                model_name = %name,
+                inferred_scale = inferred,
+                "Dynamic spatial axes — inferring upscale scale from model name"
+            );
+            inferred
         } else {
-            warn!("Dynamic spatial axes — defaulting to scale=4");
-            4
+            warn!(
+                model_name = %name,
+                "Dynamic spatial axes — unable to infer scale from metadata; defaulting to scale=2"
+            );
+            2
         };
 
         let min_input_hw = (
@@ -654,11 +692,6 @@ impl TensorRtBackend {
             if ih > 0 { ih as u32 } else { u32::MAX },
             if iw > 0 { iw as u32 } else { u32::MAX },
         );
-
-        let name = session
-            .metadata()
-            .map(|m| m.name().unwrap_or("unknown".to_string()))
-            .unwrap_or_else(|_| "unknown".to_string());
 
         Ok(ModelMetadata {
             name,
