@@ -1000,7 +1000,7 @@ Ensure ORT_DYLIB_PATH/ORT_LIB_LOCATION points to a valid ORT cache dir.",
                 path = %provider.display(),
                 "ORT provider pair prepared (providers_shared preloaded, provider path configured)"
             );
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(not(target_os = "linux"))]
