@@ -29,6 +29,10 @@ jobs:
         shell: pwsh
         run: .\scripts\test.ps1
 
+      - name: Upscale smoke (runtime)
+        shell: pwsh
+        run: .\scripts\smoke_upscale.ps1
+
       - name: Validate harness (best effort)
         shell: pwsh
         env:

@@ -99,6 +99,12 @@ Windows (PowerShell):
 .\scripts\test.ps1
 ```
 
+Runtime smoke (Windows PowerShell):
+
+```powershell
+.\scripts\smoke_upscale.ps1
+```
+
 ## CLI Quickstart
 
 ```bash

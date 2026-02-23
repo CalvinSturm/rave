@@ -47,6 +47,18 @@ Test:
 .\scripts\test.ps1 --features audit-no-host-copies
 ```
 
+Runtime smoke (upscale dry-run JSON contract):
+
+```powershell
+.\scripts\smoke_upscale.ps1
+```
+
+Canonical smoke defaults:
+- Model: `tests/assets/models/resize2x_rgb.onnx`
+- Input: auto-generated `target/smoke/smoke_input.mp4` (if `-InputPath` not provided)
+- Output: `target/smoke/smoke_out.mp4`
+- Contract: stdout is valid JSON with `"ok": true`
+
 ## Expected Success Signals
 
 - Build prints: `Finished 'release' profile` or `Finished 'dev' profile`
