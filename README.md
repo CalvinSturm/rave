@@ -64,6 +64,7 @@ Unsafe-boundary audit checklist:
 
 Consumer integration contract:
 - `docs/integration_contract.md`
+- `docs/windows_integration_checklist.md` (Windows build/test/runtime)
 
 Stage graph integration API:
 - `rave-pipeline` exports `StageGraph`, `StageConfig`, `ProfilePreset`,
@@ -77,6 +78,13 @@ Stage graph integration API:
 
 ```bash
 cargo build --workspace
+```
+
+Windows (PowerShell):
+
+```powershell
+.\scripts\build.ps1 --workspace
+.\scripts\build.ps1 -- -p rave-cli --bin rave --release
 ```
 
 ## Test
