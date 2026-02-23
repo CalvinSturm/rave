@@ -53,6 +53,22 @@ fn resolve_cuda_root() -> Option<PathBuf> {
     None
 }
 
+fn resolve_nvcodec_dir(manifest_dir: &PathBuf) -> Option<PathBuf> {
+    let rave_root = manifest_dir.parent()?.parent()?;
+    let mut candidates = vec![
+        // Vendored inside the rave repo.
+        rave_root.join("third_party").join("nvcodec"),
+    ];
+    // Parent app layout: <app>/third_party/{rave,nvcodec,ffmpeg}.
+    if let Some(parent_third_party) = rave_root.parent() {
+        candidates.push(parent_third_party.join("nvcodec"));
+    }
+
+    candidates.into_iter().find(|dir| {
+        dir.exists() && dir.join("nvcuvid.lib").exists() && dir.join("nvencodeapi.lib").exists()
+    })
+}
+
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(rave_nvcodec_stub)");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
@@ -119,27 +135,18 @@ fn main() {
     // ── Video Codec SDK (nvcuvid + nvEncodeAPI) ─────────────────────────────
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let nvcodec_dir = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .unwrap()
-        .join("third_party")
-        .join("nvcodec");
+    let nvcodec_dir = resolve_nvcodec_dir(&manifest_dir);
 
     if cfg!(target_os = "windows") {
-        if nvcodec_dir.exists()
-            && nvcodec_dir.join("nvcuvid.lib").exists()
-            && nvcodec_dir.join("nvencodeapi.lib").exists()
-        {
+        if let Some(nvcodec_dir) = nvcodec_dir {
             println!("cargo:rustc-link-search=native={}", nvcodec_dir.display());
         } else {
             // Fallback: expect libs in CUDA toolkit directory
             println!(
-                "cargo:warning=Video Codec SDK libs not found in {}. Falling back to CUDA lib dir.",
-                nvcodec_dir.display()
+                "cargo:warning=Video Codec SDK libs not found in expected nvcodec locations. Falling back to CUDA lib dir."
             );
         }
-    } else if nvcodec_dir.exists() {
+    } else if let Some(nvcodec_dir) = nvcodec_dir {
         // Linux toolchains consume .so/.a, but adding this path is harmless and
         // supports repos that vendor Linux NVCodec artifacts in third_party/nvcodec.
         println!("cargo:rustc-link-search=native={}", nvcodec_dir.display());

@@ -3,3 +3,11 @@ rustflags = [
   "-Lnative=/usr/lib/wsl/lib",
   "-Lnative=/usr/local/lib/wsl-nvidia",
 ]
+
+[env]
+# Use bundled FFmpeg from the parent project's third_party directory.
+FFMPEG_DIR = { value = "../ffmpeg", relative = true }
+# Ensure bindgen (ffmpeg-sys-next) can load libclang on Windows.
+LIBCLANG_PATH = "C:/Program Files/LLVM/bin"
+# Force ffmpeg-sys-next away from system pkg-config/vcpkg probing on Windows.
+PKG_CONFIG = "nonexistent"

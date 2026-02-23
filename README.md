@@ -85,6 +85,12 @@ cargo build --workspace
 cargo test --workspace
 ```
 
+Windows (PowerShell):
+
+```powershell
+.\scripts\test.ps1
+```
+
 ## CLI Quickstart
 
 ```bash

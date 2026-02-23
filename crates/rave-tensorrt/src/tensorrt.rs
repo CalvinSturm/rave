@@ -32,12 +32,17 @@
 //! `Arc::strong_count == 1` before returning a slot, guaranteeing no
 //! concurrent reader.  Ring size must be ≥ `downstream_channel_capacity + 2`.
 
+#[cfg(target_os = "linux")]
 use std::collections::HashSet;
 use std::env;
+#[cfg(target_os = "linux")]
 use std::ffi::{CStr, CString, c_char, c_void};
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
+#[cfg(target_os = "linux")]
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
@@ -484,6 +489,7 @@ impl OrtProviderKind {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn label(self) -> &'static str {
         match self {
             OrtProviderKind::Cuda => "providers_cuda",
@@ -1023,6 +1029,7 @@ Ensure ORT_DYLIB_PATH/ORT_LIB_LOCATION points to a valid ORT cache dir.",
     }
 
     #[cfg(all(not(target_os = "linux"), test))]
+    #[allow(dead_code)]
     fn preload_ort_provider_bridge() -> Result<()> {
         Ok(())
     }
