@@ -10,7 +10,7 @@
 //!   2. CUDA_PATH/lib/x64 (fallback)
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
 fn find_linux_cuda_root() -> Option<PathBuf> {
@@ -54,7 +54,7 @@ fn resolve_cuda_root() -> Option<PathBuf> {
     None
 }
 
-fn resolve_nvcodec_dir(manifest_dir: &PathBuf) -> Option<PathBuf> {
+fn resolve_nvcodec_dir(manifest_dir: &Path) -> Option<PathBuf> {
     let rave_root = manifest_dir.parent()?.parent()?;
     let mut candidates = vec![
         // Vendored inside the rave repo.
