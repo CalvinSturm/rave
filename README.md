@@ -39,8 +39,8 @@ rave-cuda      -> rave-core
 rave-tensorrt  -> rave-core (optionally rave-cuda utilities)
 rave-nvcodec   -> rave-core (optionally rave-cuda utilities)
 rave-ffmpeg    -> rave-core
-rave-pipeline       -> rave-core, rave-cuda, rave-tensorrt (+ optional graph runtime features)
-rave-runtime-nvidia -> rave-core, rave-cuda, rave-tensorrt, rave-nvcodec, rave-ffmpeg, rave-pipeline
+rave-pipeline       -> rave-core, cudarc (+ optional rave-cuda/rave-tensorrt/rave-nvcodec/rave-ffmpeg)
+rave-runtime-nvidia -> rave-core, rave-cuda, rave-tensorrt, rave-nvcodec, rave-ffmpeg
 rave-cli            -> rave-core, rave-pipeline, rave-runtime-nvidia
 ```
 
