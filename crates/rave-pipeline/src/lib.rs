@@ -15,8 +15,8 @@ pub use pipeline::{
 };
 pub use stage_graph::{
     AuditItem, AuditLevel, BatchConfig, EnhanceConfig, GRAPH_SCHEMA_VERSION, PipelineReport,
-    PrecisionPolicyConfig, ProfilePreset, RunContract, StageConfig, StageGraph, StageId,
-    StageKind, StageTimingReport, validate_batch_config,
+    PrecisionPolicyConfig, ProfilePreset, RunContract, StageConfig, StageGraph, StageId, StageKind,
+    StageTimingReport, validate_batch_config,
 };
 
 #[cfg(test)]

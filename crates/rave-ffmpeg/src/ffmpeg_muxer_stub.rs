@@ -23,7 +23,13 @@ impl FfmpegMuxer {
 }
 
 impl BitstreamSink for FfmpegMuxer {
-    fn write_packet(&mut self, _data: &[u8], _pts: i64, _dts: i64, _is_keyframe: bool) -> Result<()> {
+    fn write_packet(
+        &mut self,
+        _data: &[u8],
+        _pts: i64,
+        _dts: i64,
+        _is_keyframe: bool,
+    ) -> Result<()> {
         Err(EngineError::Mux(
             "rave-ffmpeg built without `ffmpeg-runtime`; container mux is unavailable".into(),
         ))

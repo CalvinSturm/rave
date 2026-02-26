@@ -2,8 +2,8 @@
 //! Stub TensorRT backend for docs.rs / no-runtime builds.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 

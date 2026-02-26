@@ -47,12 +47,12 @@
 //! `PipelineMetrics` tracks per-stage frame counts with atomic counters.
 //! Stage latency is tracked via wall-clock `Instant` timing.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
-use std::sync::Mutex;
 #[cfg(feature = "nvidia-run-graph")]
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;

@@ -12,10 +12,10 @@
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::ffi::{CStr, CString, c_char, c_void};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Once};
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Once};
 
 use cudarc::driver::{CudaDevice, CudaSlice, CudaStream, DeviceSlice};
 use tracing::{info, warn};

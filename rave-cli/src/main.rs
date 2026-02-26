@@ -30,20 +30,19 @@ use rave_core::host_copy_audit::{
 };
 use rave_core::types::{FrameEnvelope, GpuTexture, PixelFormat};
 use rave_pipeline::pipeline::{PipelineConfig, PipelineMetrics, UpscalePipeline};
-use rave_runtime_nvidia::{
-    Decoder as PipelineDecoder, Encoder as PipelineEncoder, ResolvedInput, RuntimeRequest,
-    RuntimeSetup, create_context_and_kernels as pipeline_create_context_and_kernels,
-    create_decoder as pipeline_create_decoder,
-    create_nvenc_encoder as pipeline_create_nvenc_encoder,
-    is_container as pipeline_is_container,
-    parse_precision as pipeline_parse_precision, prepare_runtime as pipeline_prepare_runtime,
-    resolve_input as pipeline_resolve_input,
-};
 use rave_pipeline::{
     AuditLevel, BatchConfig as GraphBatchConfig, DeterminismObserved, DeterminismPolicy,
     DeterminismSkipReason, EnhanceConfig, GRAPH_SCHEMA_VERSION, PipelineReport,
     PrecisionPolicyConfig, ProfilePreset, RunContract, StageConfig, StageGraph, StageId,
     enforce_determinism_policy,
+};
+use rave_runtime_nvidia::{
+    Decoder as PipelineDecoder, Encoder as PipelineEncoder, ResolvedInput, RuntimeRequest,
+    RuntimeSetup, create_context_and_kernels as pipeline_create_context_and_kernels,
+    create_decoder as pipeline_create_decoder,
+    create_nvenc_encoder as pipeline_create_nvenc_encoder, is_container as pipeline_is_container,
+    parse_precision as pipeline_parse_precision, prepare_runtime as pipeline_prepare_runtime,
+    resolve_input as pipeline_resolve_input,
 };
 
 #[cfg(target_os = "linux")]
@@ -657,9 +656,13 @@ impl FrameDecoder for SoftwareNv12Decoder {
             return Ok(None);
         }
 
-        let gpu = self.ctx.device().htod_sync_copy(&self.frame_buf).map_err(|e| {
-            EngineError::Decode(format!("software decoder host->device copy failed: {e}"))
-        })?;
+        let gpu = self
+            .ctx
+            .device()
+            .htod_sync_copy(&self.frame_buf)
+            .map_err(|e| {
+                EngineError::Decode(format!("software decoder host->device copy failed: {e}"))
+            })?;
 
         let texture = GpuTexture {
             data: Arc::new(gpu),
@@ -717,12 +720,7 @@ struct SoftwareHevcEncoder {
 }
 
 impl SoftwareHevcEncoder {
-    fn new(
-        setup: &RuntimeSetup,
-        output_path: &Path,
-        fps_num: u32,
-        fps_den: u32,
-    ) -> Result<Self> {
+    fn new(setup: &RuntimeSetup, output_path: &Path, fps_num: u32, fps_den: u32) -> Result<Self> {
         let fps_den = fps_den.max(1);
         let mut cmd = ProcessCommand::new("ffmpeg");
         cmd.arg("-hide_banner")
@@ -819,7 +817,9 @@ impl FrameEncoder for SoftwareHevcEncoder {
                 frame.texture.format
             )));
         }
-        if frame.texture.width as usize != self.width || frame.texture.height as usize != self.height {
+        if frame.texture.width as usize != self.width
+            || frame.texture.height as usize != self.height
+        {
             return Err(EngineError::Encode(format!(
                 "Software fallback encoder frame size mismatch: got {}x{}, expected {}x{}",
                 frame.texture.width, frame.texture.height, self.width, self.height
@@ -827,11 +827,17 @@ impl FrameEncoder for SoftwareHevcEncoder {
         }
 
         self.ctx.sync_all().map_err(|e| {
-            EngineError::Encode(format!("Software fallback failed to synchronize CUDA streams: {e}"))
+            EngineError::Encode(format!(
+                "Software fallback failed to synchronize CUDA streams: {e}"
+            ))
         })?;
-        let host = self.ctx.device().dtoh_sync_copy(&*frame.texture.data).map_err(|e| {
-            EngineError::Encode(format!("Software fallback DtoH readback failed: {e}"))
-        })?;
+        let host = self
+            .ctx
+            .device()
+            .dtoh_sync_copy(&*frame.texture.data)
+            .map_err(|e| {
+                EngineError::Encode(format!("Software fallback DtoH readback failed: {e}"))
+            })?;
 
         let payload: Vec<u8> = if frame.texture.pitch == self.width {
             let tight = self.tight_size_bytes();
