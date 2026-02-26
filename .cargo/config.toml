@@ -4,10 +4,12 @@ rustflags = [
   "-Lnative=/usr/local/lib/wsl-nvidia",
 ]
 
-[env]
-# Use bundled FFmpeg from the parent project's third_party directory.
-FFMPEG_DIR = { value = "../ffmpeg", relative = true }
-# Ensure bindgen (ffmpeg-sys-next) can load libclang on Windows.
-LIBCLANG_PATH = "C:/Program Files/LLVM/bin"
-# Force ffmpeg-sys-next away from system pkg-config/vcpkg probing on Windows.
-PKG_CONFIG = "nonexistent"
+# NOTE:
+# Windows-local FFmpeg/libclang/pkg-config overrides are intentionally not set
+# here because `.cargo/config.toml` applies in CI as well and breaks Linux
+# builds (e.g. `ffmpeg-sys-next`, `openssl-sys`) by forcing Windows-only values.
+#
+# Set these in a local shell/profile or an untracked local Cargo config instead:
+#   FFMPEG_DIR=...
+#   LIBCLANG_PATH=...
+#   PKG_CONFIG=nonexistent   (Windows-only workaround)
