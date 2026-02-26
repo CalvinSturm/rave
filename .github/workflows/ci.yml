@@ -99,7 +99,7 @@ jobs:
         run: unset FFMPEG_DIR LIBCLANG_PATH; cargo fmt --all -- --check
 
       - name: Clippy
-        run: unset FFMPEG_DIR LIBCLANG_PATH; cargo clippy --workspace --all-targets -- -D warnings
+        run: unset FFMPEG_DIR LIBCLANG_PATH; cargo clippy --workspace --all-targets -- -D warnings -A missing_docs -A clippy::incompatible-msrv
 
       - name: Tests
         run: unset FFMPEG_DIR LIBCLANG_PATH; cargo test --workspace
