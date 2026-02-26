@@ -1,3 +1,7 @@
+[![Crates.io](https://img.shields.io/crates/v/rave-core.svg)](https://crates.io/crates/rave-core)
+[![docs.rs](https://docs.rs/rave-core/badge.svg)](https://docs.rs/rave-core)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+
 # rave-core
 
 Core types, traits, context, and error model shared by all RAVE crates.

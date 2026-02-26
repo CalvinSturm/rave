@@ -13,7 +13,7 @@
 //! All functions in this module are `unsafe extern "C"`.  The safe wrappers
 //! in `nvdec.rs` and `nvenc.rs` enforce invariants documented below.
 
-#![allow(non_camel_case_types, non_snake_case, dead_code)]
+#![allow(non_camel_case_types, non_snake_case, dead_code, missing_docs)]
 
 use std::ffi::c_void;
 use std::os::raw::{c_int, c_short, c_uint, c_ulong, c_ulonglong};
@@ -842,13 +842,32 @@ pub enum CUmemorytype {
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Convert a CUDA result to an engine Result.
+/// Convert a CUDA result to an engine `Result`, mapping failures to
+/// [`EngineError::Decode`](rave_core::error::EngineError::Decode).
+///
+/// Use in decode-side code paths (NVDEC, parser, stream sync during decode).
 #[inline]
 pub fn check_cu(result: CUresult, context: &str) -> rave_core::error::Result<()> {
     if result == CUDA_SUCCESS {
         Ok(())
     } else {
         Err(rave_core::error::EngineError::Decode(format!(
+            "{context}: CUDA error code {result}"
+        )))
+    }
+}
+
+/// Convert a CUDA result to an engine `Result`, mapping failures to
+/// [`EngineError::Encode`](rave_core::error::EngineError::Encode).
+///
+/// Use in encode-side code paths (NVENC session, context switching for encoder,
+/// stream sync during encode).
+#[inline]
+pub fn check_cu_encode(result: CUresult, context: &str) -> rave_core::error::Result<()> {
+    if result == CUDA_SUCCESS {
+        Ok(())
+    } else {
+        Err(rave_core::error::EngineError::Encode(format!(
             "{context}: CUDA error code {result}"
         )))
     }

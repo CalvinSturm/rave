@@ -1,7 +1,13 @@
 #![doc = include_str!("../README.md")]
 
+#[cfg(feature = "nvidia-inference")]
 pub mod inference;
+#[cfg(feature = "cuda-pipeline")]
 pub mod pipeline;
+#[cfg(not(feature = "cuda-pipeline"))]
+#[path = "pipeline_stub.rs"]
+pub mod pipeline;
+#[cfg(feature = "compat-runtime-nvidia")]
 pub mod runtime;
 pub mod stage_graph;
 
@@ -10,9 +16,9 @@ pub use pipeline::{
     UpscalePipeline, enforce_determinism_policy,
 };
 pub use stage_graph::{
-    AuditItem, AuditLevel, BatchConfig, BlurConfig, BlurMode, EnhanceConfig, GRAPH_SCHEMA_VERSION,
-    PipelineReport, PrecisionPolicyConfig, ProfilePreset, Rect, RunContract, StageConfig,
-    StageGraph, StageId, StageKind, StageTimingReport, SwapConfig, validate_batch_config,
+    AuditItem, AuditLevel, BatchConfig, EnhanceConfig, GRAPH_SCHEMA_VERSION, PipelineReport,
+    PrecisionPolicyConfig, ProfilePreset, RunContract, StageConfig, StageGraph, StageId,
+    StageKind, StageTimingReport, validate_batch_config,
 };
 
 #[cfg(test)]

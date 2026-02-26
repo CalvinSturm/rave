@@ -2,11 +2,16 @@
 name = "rave-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
 description = "RAVE CLI — GPU-native video super-resolution engine."
 readme = "README.md"
+keywords = ["video", "gpu", "ai", "upscaling", "cli"]
+categories = ["command-line-utilities", "multimedia"]
+publish = false
 
 [[bin]]
 name = "rave"
@@ -18,14 +23,16 @@ default = []
 debug-alloc = ["rave-core/debug-alloc", "rave-pipeline/debug-alloc"]
 audit-no-host-copies = ["rave-core/audit-no-host-copies", "rave-pipeline/audit-no-host-copies"]
 
+[lints]
+workspace = true
+
 [dependencies]
 rave-core = { workspace = true }
-rave-pipeline = { workspace = true }
+rave-pipeline = { workspace = true, features = ["nvidia-run-graph"] }
+rave-runtime-nvidia = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
-[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

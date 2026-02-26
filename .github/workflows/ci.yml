@@ -3,9 +3,55 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 jobs:
+  publishability:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - rave-core
+          - rave-cuda
+          - rave-ffmpeg
+          - rave-nvcodec
+          - rave-pipeline
+          - rave-tensorrt
+          - rave-runtime-nvidia
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish dry-run (metadata/package)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: cargo publish --dry-run --no-verify -p ${{ matrix.crate }}
+
+      - name: Package file list
+        run: cargo package --list -p ${{ matrix.crate }}
+
+  docsrs-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: docs.rs-style checks (native crates)
+        env:
+          CARGO_TARGET_DIR: target-docsrs-check
+          DOCS_RS: "1"
+        run: |
+          cargo check -p rave-ffmpeg --no-default-features
+          cargo check -p rave-tensorrt --no-default-features
+          cargo check -p rave-nvcodec
+          cargo check -p rave-runtime-nvidia --no-default-features
+          cargo check -p rave-pipeline --no-default-features
+
   checks:
     runs-on: ubuntu-latest
     steps:

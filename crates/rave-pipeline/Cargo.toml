@@ -2,28 +2,46 @@
 name = "rave-pipeline"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
 description = "RAVE pipeline orchestration — decode→preprocess→infer→encode."
 readme = "README.md"
+include = ["Cargo.toml", "README.md", "src/**"]
+keywords = ["video", "pipeline", "gpu", "ai", "super-resolution"]
+categories = ["multimedia", "asynchronous", "hardware-support"]
 
 [features]
-default = []
+default = ["cuda-pipeline"]
+cuda-pipeline = ["dep:rave-cuda"]
 debug-alloc = ["rave-core/debug-alloc"]
-audit-no-host-copies = ["rave-core/audit-no-host-copies", "rave-tensorrt/audit-no-host-copies"]
+audit-no-host-copies = ["rave-core/audit-no-host-copies", "dep:rave-tensorrt", "rave-tensorrt/audit-no-host-copies"]
 debug-host-copies = []
+nvidia-inference = ["cuda-pipeline", "dep:rave-tensorrt"]
+nvidia-run-graph = ["nvidia-inference", "dep:rave-ffmpeg", "dep:rave-nvcodec"]
+compat-runtime-nvidia = ["dep:rave-runtime-nvidia"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+no-default-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 rave-core = { workspace = true }
-rave-cuda = { workspace = true }
-rave-tensorrt = { workspace = true }
-rave-nvcodec = { workspace = true }
-rave-ffmpeg = { workspace = true }
+rave-cuda = { workspace = true, optional = true }
+rave-tensorrt = { workspace = true, optional = true }
+rave-nvcodec = { workspace = true, optional = true }
+rave-ffmpeg = { workspace = true, optional = true }
 cudarc = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+rave-runtime-nvidia = { workspace = true, optional = true }

@@ -1,3 +1,7 @@
+[![Crates.io](https://img.shields.io/crates/v/rave-ffmpeg.svg)](https://crates.io/crates/rave-ffmpeg)
+[![docs.rs](https://docs.rs/rave-ffmpeg/badge.svg)](https://docs.rs/rave-ffmpeg)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+
 # rave-ffmpeg
 
 FFmpeg-based container I/O and probing for RAVE.

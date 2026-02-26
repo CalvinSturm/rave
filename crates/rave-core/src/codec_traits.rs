@@ -13,6 +13,7 @@ use crate::types::FrameEnvelope;
 ///
 /// Implementations: file reader, network receiver, FFmpeg demuxer, etc.
 pub trait BitstreamSource: Send + 'static {
+    /// Read the next compressed bitstream packet, or `None` at end-of-stream.
     fn read_packet(&mut self) -> Result<Option<BitstreamPacket>>;
 }
 
@@ -42,6 +43,7 @@ pub trait BitstreamSink: Send + 'static {
     /// `pts` and `dts` are in microseconds. Container muxers are responsible
     /// for rescaling to stream time_base at the output boundary.
     fn write_packet(&mut self, data: &[u8], pts: i64, dts: i64, is_keyframe: bool) -> Result<()>;
+    /// Flush any internal buffers and finalise the output stream.
     fn flush(&mut self) -> Result<()>;
 }
 
@@ -69,20 +71,30 @@ unsafe impl Send for DecodedFrame {}
 
 /// Video frame decoder producing GPU-resident NV12 frames.
 pub trait FrameDecoder: Send + 'static {
+    /// Decode the next frame from the bitstream source.
+    ///
+    /// Returns `None` at end-of-stream.
     fn decode_next(&mut self) -> Result<Option<DecodedFrame>>;
 }
 
 /// Video frame encoder consuming GPU-resident NV12 frames.
 pub trait FrameEncoder: Send + 'static {
+    /// Submit one GPU-resident NV12 frame for encoding.
     fn encode(&mut self, frame: FrameEnvelope) -> Result<()>;
+    /// Flush any pending frames and finalise the bitstream.
     fn flush(&mut self) -> Result<()>;
 }
 
 // ─── Model precision ─────────────────────────────────────────────────────
 
-/// Which precision the inference model expects.
+/// Which floating-point precision the inference model expects.
+///
+/// Mirrors [`rave_cuda::kernels::ModelPrecision`] — the two types are
+/// identical and convert via pattern matching.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelPrecision {
+    /// 32-bit single-precision float.
     F32,
+    /// 16-bit half-precision float.
     F16,
 }

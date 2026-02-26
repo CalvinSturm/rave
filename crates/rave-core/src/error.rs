@@ -21,8 +21,8 @@ pub enum EngineError {
     NvrtcCompile(#[from] cudarc::nvrtc::CompileError),
 
     // ── Inference ────────────────────────────────────────────────────
-    #[error("ORT inference error: {0}")]
-    Inference(#[from] ort::Error),
+    #[error("Inference backend error: {0}")]
+    Inference(String),
 
     #[error("Model metadata error: {0}")]
     ModelMetadata(String),
@@ -148,6 +148,13 @@ impl EngineError {
             self,
             Self::BackpressureTimeout { .. } | Self::PanicRecovered { .. }
         )
+    }
+}
+
+#[cfg(feature = "ort-errors")]
+impl From<ort::Error> for EngineError {
+    fn from(value: ort::Error) -> Self {
+        Self::Inference(value.to_string())
     }
 }
 

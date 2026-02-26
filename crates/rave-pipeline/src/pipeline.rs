@@ -50,7 +50,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use std::{path::Path, sync::Mutex};
+use std::sync::Mutex;
+#[cfg(feature = "nvidia-run-graph")]
+use std::path::Path;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
@@ -64,18 +66,26 @@ use rave_core::codec_traits::{
 };
 use rave_core::context::{GpuContext, PerfStage};
 use rave_core::error::{EngineError, Result};
+#[cfg(feature = "nvidia-run-graph")]
 use rave_core::ffi_types::cudaVideoCodec;
 use rave_core::host_copy_audit::{audit_device_texture, require_host_copy_audit_if_strict};
 use rave_core::types::{FrameEnvelope, GpuTexture, PixelFormat};
-use rave_cuda::blur::{BlurRegion, FaceBlurConfig, FaceBlurEngine};
 use rave_cuda::kernels::{ModelPrecision, PreprocessKernels};
+#[cfg(feature = "nvidia-run-graph")]
 use rave_ffmpeg::ffmpeg_demuxer::FfmpegDemuxer;
+#[cfg(feature = "nvidia-run-graph")]
 use rave_ffmpeg::ffmpeg_muxer::FfmpegMuxer;
+#[cfg(feature = "nvidia-run-graph")]
 use rave_ffmpeg::file_sink::FileBitstreamSink;
+#[cfg(feature = "nvidia-run-graph")]
 use rave_ffmpeg::file_source::FileBitstreamSource;
+#[cfg(feature = "nvidia-run-graph")]
 use rave_ffmpeg::probe_container;
+#[cfg(feature = "nvidia-run-graph")]
 use rave_nvcodec::nvdec::NvDecoder;
+#[cfg(feature = "nvidia-run-graph")]
 use rave_nvcodec::nvenc::{NvEncConfig, NvEncoder};
+#[cfg(feature = "nvidia-run-graph")]
 use rave_tensorrt::tensorrt::TensorRtBackend;
 
 use crate::stage_graph::{
@@ -88,19 +98,28 @@ use crate::stage_graph::{
 /// Atomic per-stage frame counters and latency tracking.
 #[derive(Debug)]
 pub struct PipelineMetrics {
+    /// Total frames that have exited the decode stage.
     pub frames_decoded: AtomicU64,
+    /// Total frames that have exited the preprocess stage.
     pub frames_preprocessed: AtomicU64,
+    /// Total frames that have exited the inference stage.
     pub frames_inferred: AtomicU64,
+    /// Total frames that have exited the encode stage.
     pub frames_encoded: AtomicU64,
-    // Stage latency accumulators (microseconds).
+    /// Cumulative decode stage wall-clock time in microseconds.
     pub decode_total_us: AtomicU64,
+    /// Cumulative preprocess stage wall-clock time in microseconds.
     pub preprocess_total_us: AtomicU64,
+    /// Cumulative inference stage wall-clock time in microseconds.
     pub inference_total_us: AtomicU64,
+    /// Cumulative postprocess stage wall-clock time in microseconds.
     pub postprocess_total_us: AtomicU64,
+    /// Cumulative encode stage wall-clock time in microseconds.
     pub encode_total_us: AtomicU64,
 }
 
 impl PipelineMetrics {
+    /// Allocate a fresh [`PipelineMetrics`] with all counters zeroed.
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             frames_decoded: AtomicU64::new(0),
@@ -171,24 +190,35 @@ fn enforce_metrics_invariants(metrics: &PipelineMetrics, strict: bool) -> Result
     )))
 }
 
+/// Determinism checking mode for the inference stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum DeterminismPolicy {
+    /// Attempt hash comparison if possible; skip silently if not supported.
     #[default]
     BestEffort,
+    /// Require a successful hash comparison; fail if it cannot be performed.
     RequireHash,
 }
 
+/// Reason why determinism checking was skipped for a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeterminismSkipReason {
+    /// The `audit-no-host-copies` feature flag is not active.
     FeatureDisabled,
+    /// The output texture format is not supported for readback.
     UnsupportedFormat,
+    /// The debug readback path is unavailable in this build.
     DebugReadbackUnavailable,
+    /// The active inference backend does not support host readback.
     BackendNoReadback,
+    /// Determinism checking was explicitly disabled by [`DeterminismPolicy::BestEffort`].
     ExplicitlyDisabled,
+    /// An unexpected condition prevented the check.
     Unknown,
 }
 
 impl DeterminismSkipReason {
+    /// Machine-readable audit code string for this skip reason.
     pub fn code(self) -> &'static str {
         match self {
             Self::FeatureDisabled => "feature_disabled",
@@ -201,13 +231,19 @@ impl DeterminismSkipReason {
     }
 }
 
+/// Observed outcome of a determinism hash attempt for a single frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct DeterminismObserved {
+    /// `true` if a hash was requested for this frame.
     pub hash_requested: bool,
+    /// `true` if the hash was successfully computed.
     pub hash_available: bool,
+    /// Reason the hash was not computed, if applicable.
     pub skip_reason: Option<DeterminismSkipReason>,
 }
 
+/// Enforce the determinism policy, returning an error if `RequireHash` was
+/// requested but a hash was not available.
 pub fn enforce_determinism_policy(
     policy: DeterminismPolicy,
     observed: DeterminismObserved,
@@ -252,6 +288,7 @@ pub fn enforce_determinism_policy(
 
 // ─── Pipeline config ────────────────────────────────────────────────────────
 
+/// Runtime configuration for an [`UpscalePipeline`] instance.
 #[derive(Clone, Debug)]
 pub struct PipelineConfig {
     /// Channel capacity: decode → preprocess.
@@ -295,6 +332,10 @@ impl Default for PipelineConfig {
 
 // ─── Pipeline ───────────────────────────────────────────────────────────────
 
+/// Bounded GPU pipeline: decode → preprocess → infer → encode.
+///
+/// Call [`run`](Self::run) to execute the full pipeline, or [`run_graph`](Self::run_graph)
+/// to drive execution from a [`StageGraph`] configuration.
 pub struct UpscalePipeline {
     ctx: Arc<GpuContext>,
     kernels: Arc<PreprocessKernels>,
@@ -304,6 +345,7 @@ pub struct UpscalePipeline {
 }
 
 impl UpscalePipeline {
+    /// Create a new pipeline with the given GPU context, compiled kernels, and config.
     pub fn new(
         ctx: Arc<GpuContext>,
         kernels: Arc<PreprocessKernels>,
@@ -322,10 +364,14 @@ impl UpscalePipeline {
         }
     }
 
+    /// Return a clone of the pipeline's cancellation token.
+    ///
+    /// Calling `cancel()` on this token requests cooperative shutdown of all stages.
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
 
+    /// Return a reference to the shared atomic metrics counters.
     pub fn metrics(&self) -> Arc<PipelineMetrics> {
         self.metrics.clone()
     }
@@ -547,6 +593,7 @@ impl UpscalePipeline {
     /// Run a fixed, validated stage graph on container/bitstream paths.
     ///
     /// This is the stable integration surface for app-level effect chains.
+    #[cfg(feature = "nvidia-run-graph")]
     #[instrument(skip_all, name = "upscale_pipeline_graph")]
     pub async fn run_graph(
         &self,
@@ -740,6 +787,24 @@ impl UpscalePipeline {
             vram_peak_bytes: vram_peak,
             audit,
         })
+    }
+
+    /// Run a fixed, validated stage graph on container/bitstream paths.
+    ///
+    /// This entry point requires the `nvidia-run-graph` feature.
+    #[cfg(not(feature = "nvidia-run-graph"))]
+    pub async fn run_graph(
+        &self,
+        _input: &std::path::Path,
+        _output: &std::path::Path,
+        _graph: StageGraph,
+        _profile: ProfilePreset,
+        _contract: RunContract,
+    ) -> Result<PipelineReport> {
+        Err(EngineError::Pipeline(
+            "`UpscalePipeline::run_graph` requires the `nvidia-run-graph` feature on `rave-pipeline`"
+                .into(),
+        ))
     }
 
     /// Synthetic stress test — validates engine mechanics without real codecs.
@@ -974,17 +1039,26 @@ mod tests {
     }
 }
 
-/// Stress test result.
+/// Throughput and memory statistics from a synthetic stress test run.
 #[derive(Debug)]
 pub struct StressTestReport {
+    /// Total frames processed during the measured phase.
     pub total_frames: u64,
+    /// Wall-clock duration of the measured phase.
     pub elapsed: Duration,
+    /// Average throughput in frames per second.
     pub avg_fps: f64,
+    /// Average end-to-end latency per frame in milliseconds.
     pub avg_latency_ms: f64,
+    /// Peak VRAM usage observed during the run in bytes.
     pub peak_vram_bytes: usize,
+    /// VRAM usage at the end of the run in bytes.
     pub final_vram_bytes: usize,
+    /// VRAM usage before the run started in bytes (baseline).
     pub vram_before_bytes: usize,
+    /// Total frames decoded during the run.
     pub frames_decoded: u64,
+    /// Total frames encoded during the run.
     pub frames_encoded: u64,
     /// Pool hit rate during the measured phase (post warm-up).
     pub pool_hit_rate_pct: f64,
@@ -1007,19 +1081,24 @@ pub struct AuditReport {
     pub stream_overlap_check: AuditResult,
 }
 
+/// Outcome of a single invariant check in the audit suite.
 #[derive(Debug)]
 pub enum AuditResult {
+    /// The check passed; the string contains a description of the observation.
     Pass(String),
+    /// The check failed; the string describes the violation.
     Fail(String),
 }
 
 impl AuditResult {
+    /// Return `true` if this result is a [`Pass`](AuditResult::Pass).
     pub fn is_pass(&self) -> bool {
         matches!(self, AuditResult::Pass(_))
     }
 }
 
 impl AuditReport {
+    /// Return `true` if every check in the report passed.
     pub fn all_pass(&self) -> bool {
         self.host_alloc_check.is_pass()
             && self.vram_leak_check.is_pass()
@@ -1230,6 +1309,7 @@ impl AuditSuite {
 //  STAGE GRAPH BACKEND
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "nvidia-run-graph")]
 #[derive(Clone, Copy)]
 struct GraphInputConfig {
     codec: cudaVideoCodec,
@@ -1240,6 +1320,7 @@ struct GraphInputConfig {
     input_is_container: bool,
 }
 
+#[cfg(feature = "nvidia-run-graph")]
 fn is_container_path(path: &Path) -> bool {
     const CONTAINER_EXTENSIONS: &[&str] = &["mp4", "mkv", "mov", "avi", "webm", "ts", "flv"];
     path.extension()
@@ -1248,6 +1329,7 @@ fn is_container_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "nvidia-run-graph")]
 fn resolve_graph_input(path: &Path) -> Result<GraphInputConfig> {
     if is_container_path(path) {
         let meta = probe_container(path)?;
@@ -1271,6 +1353,7 @@ fn resolve_graph_input(path: &Path) -> Result<GraphInputConfig> {
     })
 }
 
+#[cfg(feature = "nvidia-run-graph")]
 fn audit_failures(audit: &[AuditItem]) -> String {
     audit
         .iter()
@@ -1286,31 +1369,26 @@ fn audit_failures(audit: &[AuditItem]) -> String {
         .join("; ")
 }
 
-struct BlurStageRuntime {
-    stage_id: crate::stage_graph::StageId,
-    config: FaceBlurConfig,
-    engine: Mutex<FaceBlurEngine>,
-}
-
+#[cfg(feature = "nvidia-run-graph")]
 #[derive(Default)]
 struct GraphBackendState {
     hashed_frames: usize,
     stage_hashes: Vec<String>,
     audit: Vec<AuditItem>,
-    warned_swap_stub: bool,
     warned_hash_feature: bool,
 }
 
+#[cfg(feature = "nvidia-run-graph")]
 struct GraphBackend {
     trt: Arc<TensorRtBackend>,
     graph: StageGraph,
     ctx: Arc<GpuContext>,
     kernels: Arc<PreprocessKernels>,
     contract: RunContract,
-    blur_stages: Vec<BlurStageRuntime>,
     state: Mutex<GraphBackendState>,
 }
 
+#[cfg(feature = "nvidia-run-graph")]
 impl GraphBackend {
     fn new(
         trt: Arc<TensorRtBackend>,
@@ -1319,39 +1397,12 @@ impl GraphBackend {
         kernels: Arc<PreprocessKernels>,
         contract: RunContract,
     ) -> Result<Self> {
-        let mut blur_stages = Vec::new();
-        for stage in &graph.stages {
-            if let StageConfig::FaceBlur { id, config } = stage {
-                let regions = config.regions.as_ref().map(|items| {
-                    items
-                        .iter()
-                        .map(|r| BlurRegion {
-                            x: r.x,
-                            y: r.y,
-                            width: r.width,
-                            height: r.height,
-                        })
-                        .collect::<Vec<_>>()
-                });
-                blur_stages.push(BlurStageRuntime {
-                    stage_id: *id,
-                    config: FaceBlurConfig {
-                        sigma: config.sigma,
-                        iterations: config.iterations,
-                        regions,
-                    },
-                    engine: Mutex::new(FaceBlurEngine::compile(ctx.device())?),
-                });
-            }
-        }
-
         Ok(Self {
             trt,
             graph,
             ctx,
             kernels,
             contract,
-            blur_stages,
             state: Mutex::new(GraphBackendState::default()),
         })
     }
@@ -1420,61 +1471,6 @@ impl GraphBackend {
         );
     }
 
-    fn apply_face_blur(
-        &self,
-        stage_id: crate::stage_graph::StageId,
-        texture: GpuTexture,
-    ) -> Result<GpuTexture> {
-        let runtime = self
-            .blur_stages
-            .iter()
-            .find(|runtime| runtime.stage_id == stage_id)
-            .ok_or_else(|| {
-                EngineError::InvariantViolation(format!(
-                    "FaceBlur stage runtime missing for stage {}",
-                    stage_id.0
-                ))
-            })?;
-
-        let mut engine = runtime.engine.lock().unwrap();
-        match texture.format {
-            PixelFormat::RgbPlanarF32 => engine.blur_rgb_planar_f32(
-                &texture,
-                &runtime.config,
-                &self.ctx,
-                &self.ctx.inference_stream,
-            ),
-            PixelFormat::RgbPlanarF16 => {
-                let f32 = self.kernels.convert_f16_to_f32(
-                    &texture,
-                    &self.ctx,
-                    &self.ctx.inference_stream,
-                )?;
-                let blurred = engine.blur_rgb_planar_f32(
-                    &f32,
-                    &runtime.config,
-                    &self.ctx,
-                    &self.ctx.inference_stream,
-                )?;
-                self.kernels
-                    .convert_f32_to_f16(&blurred, &self.ctx, &self.ctx.inference_stream)
-            }
-            other => Err(EngineError::FormatMismatch {
-                expected: PixelFormat::RgbPlanarF32,
-                actual: other,
-            }),
-        }
-    }
-
-    fn apply_swap_stub(&self, stage_id: crate::stage_graph::StageId) {
-        self.push_warn_once(
-            |state| &mut state.warned_swap_stub,
-            "STAGE_STUB",
-            Some(stage_id),
-            "FaceSwapAndEnhance stage is an MVP swap no-op stub in this release",
-        );
-    }
-
     fn audit_checks(&self) -> Vec<AuditItem> {
         self.state.lock().unwrap().audit.clone()
     }
@@ -1484,6 +1480,7 @@ impl GraphBackend {
     }
 }
 
+#[cfg(feature = "nvidia-run-graph")]
 #[async_trait]
 impl UpscaleBackend for GraphBackend {
     async fn initialize(&self) -> Result<()> {
@@ -1502,18 +1499,6 @@ impl UpscaleBackend for GraphBackend {
                             StageKind::Enhance
                         ))
                     })?;
-                }
-                StageConfig::FaceBlur { id, .. } => {
-                    texture = self.apply_face_blur(*id, texture).map_err(|err| {
-                        EngineError::Pipeline(format!(
-                            "stage {} {:?} failed: {err}",
-                            id.0,
-                            StageKind::FaceBlur
-                        ))
-                    })?;
-                }
-                StageConfig::FaceSwapAndEnhance { id, .. } => {
-                    self.apply_swap_stub(*id);
                 }
             }
         }

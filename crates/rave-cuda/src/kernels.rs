@@ -873,10 +873,12 @@ impl StageMetrics {
 //  PREPROCESS PIPELINE — full transform chain
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Which precision the inference model expects.
+/// Which floating-point precision the inference model expects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelPrecision {
+    /// 32-bit single-precision float (full precision, higher VRAM usage).
     F32,
+    /// 16-bit half-precision float (faster inference, lower VRAM usage).
     F16,
 }
 
@@ -887,7 +889,9 @@ pub enum ModelPrecision {
 pub struct PreprocessPipeline {
     kernels: PreprocessKernels,
     precision: ModelPrecision,
+    /// Latency metrics for the NV12 → RGB conversion stage.
     pub metrics_nv12_to_rgb: StageMetrics,
+    /// Latency metrics for the F32 → F16 conversion stage (F16 models only).
     pub metrics_f32_to_f16: StageMetrics,
 }
 

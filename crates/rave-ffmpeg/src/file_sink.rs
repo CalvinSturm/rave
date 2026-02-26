@@ -57,7 +57,7 @@ impl BitstreamSink for FileBitstreamSink {
         _is_keyframe: bool,
     ) -> Result<()> {
         self.writer.write_all(data).map_err(|e| {
-            EngineError::Encode(format!("Failed to write to {}: {}", self.path.display(), e))
+            EngineError::Mux(format!("Failed to write to {}: {}", self.path.display(), e))
         })?;
 
         self.bytes_written += data.len() as u64;
@@ -76,7 +76,7 @@ impl BitstreamSink for FileBitstreamSink {
 
     fn flush(&mut self) -> Result<()> {
         self.writer.flush().map_err(|e| {
-            EngineError::Encode(format!("Failed to flush {}: {}", self.path.display(), e))
+            EngineError::Mux(format!("Failed to flush {}: {}", self.path.display(), e))
         })?;
 
         tracing::info!(

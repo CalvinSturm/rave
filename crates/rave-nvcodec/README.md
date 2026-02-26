@@ -1,3 +1,7 @@
+[![Crates.io](https://img.shields.io/crates/v/rave-nvcodec.svg)](https://crates.io/crates/rave-nvcodec)
+[![docs.rs](https://docs.rs/rave-nvcodec/badge.svg)](https://docs.rs/rave-nvcodec)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+
 # rave-nvcodec
 
 NVDEC/NVENC hardware codec wrappers for RAVE.

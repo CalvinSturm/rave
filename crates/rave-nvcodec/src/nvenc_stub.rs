@@ -1,22 +1,11 @@
+#![allow(missing_docs)]
 //! CPU-only stub for builds without NVDEC/NVENC system dependencies.
 
 use rave_core::codec_traits::{BitstreamSink, FrameEncoder};
 use rave_core::error::{EngineError, Result};
 use rave_core::types::FrameEnvelope;
 
-/// Encoder configuration parameters.
-#[derive(Clone, Debug)]
-pub struct NvEncConfig {
-    pub width: u32,
-    pub height: u32,
-    pub fps_num: u32,
-    pub fps_den: u32,
-    pub bitrate: u32,
-    pub max_bitrate: u32,
-    pub gop_length: u32,
-    pub b_frames: u32,
-    pub nv12_pitch: u32,
-}
+pub use crate::config::NvEncConfig;
 
 /// Stub NVENC encoder used when `rave_nvcodec_stub` cfg is active.
 pub struct NvEncoder;

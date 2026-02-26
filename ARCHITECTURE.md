@@ -1,4 +1,4 @@
-# VideoForge v2.0 — Architecture
+# RAVE — Architecture
 
 ## Workspace crate boundaries
 
@@ -13,14 +13,16 @@ rave-cuda      -> rave-core
 rave-tensorrt  -> rave-core (optional rave-cuda utilities)
 rave-nvcodec   -> rave-core (optional rave-cuda utilities)
 rave-ffmpeg    -> rave-core
-rave-pipeline  -> rave-core, rave-cuda, rave-tensorrt, rave-nvcodec, rave-ffmpeg
-rave-cli       -> rave-core, rave-pipeline (prefer composition through pipeline)
+rave-pipeline       -> rave-core, rave-cuda, rave-tensorrt (+ optional graph-runtime features)
+rave-runtime-nvidia -> rave-core, rave-cuda, rave-tensorrt, rave-nvcodec, rave-ffmpeg, rave-pipeline
+rave-cli            -> rave-core, rave-pipeline, rave-runtime-nvidia
 ```
 
 Boundary rationale:
 - `rave-core` is the neutral type/trait/error layer.
 - Domain crates (`rave-cuda`, `rave-tensorrt`, `rave-nvcodec`, `rave-ffmpeg`) stay focused.
-- `rave-pipeline` is the only composition root for full engine behavior.
+- `rave-pipeline` owns generic orchestration and graph contracts.
+- `rave-runtime-nvidia` owns concrete NVIDIA backend composition.
 
 Decision table for new features:
 - Shared contracts and reusable primitives -> `rave-core`
@@ -28,7 +30,8 @@ Decision table for new features:
 - ORT/TensorRT execution behavior -> `rave-tensorrt`
 - NVDEC/NVENC codec behavior -> `rave-nvcodec`
 - Container I/O and packet boundaries -> `rave-ffmpeg`
-- End-to-end stage wiring and strict no-host-copies policy -> `rave-pipeline`
+- Generic stage orchestration and strict runtime contracts -> `rave-pipeline`
+- Concrete NVIDIA stack wiring (CUDA + TensorRT + FFmpeg + NVDEC/NVENC) -> `rave-runtime-nvidia`
 - CLI UX/contracts -> `rave-cli`
 
 No-host-copies checklist:
@@ -36,10 +39,10 @@ No-host-copies checklist:
 
 ## Stage graph API
 
-`rave-pipeline` provides a stable integration surface for multi-app reuse:
+`rave-pipeline` provides a stable orchestration surface for multi-app reuse:
 
 - `StageGraph` (v1 linear chain)
-- `StageConfig` / `StageKind` (`Enhance`, `FaceBlur`, `FaceSwapAndEnhance`)
+- `StageConfig` / `StageKind` (`Enhance`)
 - `ProfilePreset` (`Dev`, `ProductionStrict`, `Benchmark`)
 - `RunContract` (determinism + audit policy)
 - `UpscalePipeline::run_graph(input, output, graph, profile, contract)`
@@ -49,7 +52,6 @@ No-host-copies checklist:
 v1 constraints:
 - at least one stage
 - exactly one `Enhance` stage
-- `FaceBlur` and `FaceSwapAndEnhance` are fixed stage kinds (no arbitrary closures)
 
 This keeps behavior deterministic and mechanically auditable while leaving room
 for a future DAG scheduler without breaking the public contract.
@@ -58,7 +60,7 @@ for a future DAG scheduler without breaking the public contract.
 
 `ProfilePreset::ProductionStrict` is the first production profile and enforces:
 - strict no-host-copies mode (`PipelineConfig.strict_no_host_copies=true`)
-- hard-fail on unsupported/stub stage warnings (for example `FaceSwapAndEnhance`)
+- hard-fail on audit/invariant warnings
 - deterministic output contract checks at canonical stage boundaries
 
 Container bytes are not the determinism boundary; canonical stage checkpoint
@@ -77,11 +79,11 @@ This keeps CI deterministic while preserving local override flexibility.
 
 ## Pipeline overview
 
-VideoForge runs four concurrent stages connected by bounded async channels. Frame data stays in GPU device memory from decode to encode — no `cudaMemcpy` in steady-state operation.
+RAVE runs four concurrent tasks connected by bounded async channels. Frame data stays in GPU device memory from decode to encode — no `cudaMemcpy` in steady-state operation.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                          VideoForge v2.0 Pipeline                           │
+│                              RAVE Pipeline                                  │
 │                                                                              │
 │  ┌──────────┐  ch(4)  ┌────────────┐  ch(2)  ┌───────────┐  ch(4)  ┌──────────┐
 │  │ Decoder  │────────►│ Preprocess │────────►│ Inference │────────►│ Encoder  │
@@ -136,7 +138,8 @@ Queue depths are tracked at runtime via `QueueDepthTracker` (lock-free `AtomicUs
 
 ## Micro-batching
 
-The TensorRT backend supports optional micro-batching via `BatchConfig`:
+The TensorRT backend defines `BatchConfig` for planned micro-batching
+(not yet implemented — current inference is always single-frame):
 
 ```rust
 pub struct BatchConfig {
@@ -159,12 +162,17 @@ To implement real micro-batching, the inference stage would need:
 ```
 rave-cli
   ├── rave-core        (shared errors/types used by CLI contracts)
-  └── rave-pipeline    (composition root + runtime helpers)
+  ├── rave-pipeline    (generic orchestration + graph schema)
+  │     ├── rave-core
+  │     ├── rave-cuda
+  │     └── rave-tensorrt
+  └── rave-runtime-nvidia (concrete NVIDIA runtime composition)
         ├── rave-core
         ├── rave-cuda
         ├── rave-tensorrt
         ├── rave-nvcodec
-        └── rave-ffmpeg
+        ├── rave-ffmpeg
+        └── rave-pipeline
 
 Leaf domain crates:
 - rave-cuda      -> rave-core

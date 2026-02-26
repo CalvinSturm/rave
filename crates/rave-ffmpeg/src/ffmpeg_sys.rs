@@ -49,8 +49,11 @@ unsafe extern "C" {
 /// Structured FFmpeg error details for module-specific wrapping.
 #[derive(Debug, Clone)]
 pub struct FfmpegErrorDetail {
+    /// Human-readable description of the operation that failed (e.g. `"avformat_open_input"`).
     pub context: String,
+    /// Raw FFmpeg error code (negative AVERROR value).
     pub code: i32,
+    /// Human-readable error message from `av_strerror`.
     pub message: String,
 }
 

@@ -1,3 +1,7 @@
+[![Crates.io](https://img.shields.io/crates/v/rave-cli.svg)](https://crates.io/crates/rave-cli)
+[![docs.rs](https://docs.rs/rave-cli/badge.svg)](https://docs.rs/rave-cli)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE)
+
 # rave-cli
 
 Command-line interface for the RAVE GPU video pipeline.

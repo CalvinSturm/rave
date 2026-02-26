@@ -84,13 +84,17 @@ unsafe fn create_tensor_from_device_memory(
     };
     if !status.0.is_null() {
         unsafe { (api.ReleaseStatus)(status.0) };
-        return Err(EngineError::Inference(ort::Error::new(
-            "Failed to create MemoryInfo",
-        )));
+        return Err(EngineError::Inference(
+            ort::Error::new("Failed to create MemoryInfo").to_string(),
+        ));
     }
 
     // Create Tensor
     let mut ort_value_ptr: *mut ort_sys::OrtValue = std::ptr::null_mut();
+    // SAFETY: mem_info_ptr is a valid OrtMemoryInfo created above; ptr is a
+    // caller-supplied device pointer of at least `bytes` bytes; shape is a
+    // valid non-empty slice of i64 dimension values; ort_value_ptr is an
+    // initialized null pointer used as the output parameter.
     let status = unsafe {
         (api.CreateTensorWithDataAsOrtValue)(
             mem_info_ptr,
@@ -103,17 +107,16 @@ unsafe fn create_tensor_from_device_memory(
         )
     };
 
-    // Release MemoryInfo (Tensor likely executes AddRef / Copy, or we hand over ownership?
-    // ORT docs say CreateTensorWithDataAsOrtValue does NOT take ownership of mem_info,
-    // but the resulting tensor keeps a reference?
-    // Actually, usually we should release our handle if we don't need it.
+    // ORT API contract: CreateTensorWithDataAsOrtValue does NOT take ownership
+    // of mem_info — it copies what it needs internally. We release our handle
+    // immediately after tensor creation, before any error check, as required.
     unsafe { (api.ReleaseMemoryInfo)(mem_info_ptr) };
 
     if !status.0.is_null() {
         unsafe { (api.ReleaseStatus)(status.0) };
-        return Err(EngineError::Inference(ort::Error::new(
-            "Failed to create Tensor",
-        )));
+        return Err(EngineError::Inference(
+            ort::Error::new("Failed to create Tensor").to_string(),
+        ));
     }
 
     // Wrap in OrtValue
@@ -124,10 +127,6 @@ unsafe fn create_tensor_from_device_memory(
         )
     })
 }
-
-// use half::f16; // If half is dependency. ort might export it?
-// I will guess ort::f16 or just try referencing it fully qualified if needed.
-// I'll stick to basic imports for now and use full path in code if unsafe.
 
 // ─── Precision policy ───────────────────────────────────────────────────────
 
@@ -166,6 +165,9 @@ impl Default for BatchConfig {
     }
 }
 
+/// Validate a [`BatchConfig`], returning an error if `max_batch > 1`.
+///
+/// Micro-batching is not yet implemented; this enforces the `max_batch = 1` requirement.
 pub fn validate_batch_config(cfg: &BatchConfig) -> Result<()> {
     if cfg.max_batch > 1 {
         return Err(EngineError::InvariantViolation(
@@ -188,6 +190,7 @@ pub struct InferenceMetrics {
 }
 
 impl InferenceMetrics {
+    /// Create a new zeroed [`InferenceMetrics`].
     pub const fn new() -> Self {
         Self {
             frames_inferred: AtomicU64::new(0),
@@ -196,6 +199,7 @@ impl InferenceMetrics {
         }
     }
 
+    /// Record a single frame's inference latency in microseconds.
     pub fn record(&self, elapsed_us: u64) {
         self.frames_inferred.fetch_add(1, Ordering::Relaxed);
         self.total_inference_us
@@ -204,6 +208,7 @@ impl InferenceMetrics {
             .fetch_max(elapsed_us, Ordering::Relaxed);
     }
 
+    /// Return a point-in-time snapshot of all inference counters.
     pub fn snapshot(&self) -> InferenceMetricsSnapshot {
         let frames = self.frames_inferred.load(Ordering::Relaxed);
         let total = self.total_inference_us.load(Ordering::Relaxed);
@@ -225,12 +230,26 @@ impl Default for InferenceMetrics {
 /// Snapshot of inference metrics for reporting.
 #[derive(Clone, Debug)]
 pub struct InferenceMetricsSnapshot {
+    /// Total frames inferred.
     pub frames_inferred: u64,
+    /// Average inference latency in microseconds.
     pub avg_inference_us: u64,
+    /// Peak single-frame inference latency in microseconds.
     pub peak_inference_us: u64,
 }
 
 // ─── Ring metrics ────────────────────────────────────────────────────────────
+
+/// A point-in-time snapshot of [`RingMetrics`] counters.
+#[derive(Debug, Clone, Copy)]
+pub struct RingMetricsSnapshot {
+    /// Number of times a slot was acquired and was already free (strong_count == 1).
+    pub reuse: u64,
+    /// Number of times `acquire()` found a slot still held downstream (strong_count > 1).
+    pub contention: u64,
+    /// Number of times a slot was used for the very first time (not a reuse).
+    pub first_use: u64,
+}
 
 /// Atomic counters for output ring buffer activity.
 #[derive(Debug)]
@@ -244,6 +263,7 @@ pub struct RingMetrics {
 }
 
 impl RingMetrics {
+    /// Create a new zeroed [`RingMetrics`].
     pub const fn new() -> Self {
         Self {
             slot_reuse_count: AtomicU64::new(0),
@@ -252,12 +272,13 @@ impl RingMetrics {
         }
     }
 
-    pub fn snapshot(&self) -> (u64, u64, u64) {
-        (
-            self.slot_reuse_count.load(Ordering::Relaxed),
-            self.slot_contention_events.load(Ordering::Relaxed),
-            self.slot_first_use_count.load(Ordering::Relaxed),
-        )
+    /// Returns a point-in-time snapshot of all ring counters.
+    pub fn snapshot(&self) -> RingMetricsSnapshot {
+        RingMetricsSnapshot {
+            reuse: self.slot_reuse_count.load(Ordering::Relaxed),
+            contention: self.slot_contention_events.load(Ordering::Relaxed),
+            first_use: self.slot_first_use_count.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -273,10 +294,13 @@ impl Default for RingMetrics {
 pub struct OutputRing {
     slots: Vec<Arc<cudarc::driver::CudaSlice<u8>>>,
     cursor: usize,
+    /// Size of each slot in bytes (`3 × out_w × out_h × sizeof(f32)`).
     pub slot_bytes: usize,
+    /// Input dimensions `(width, height)` used to allocate the current slots.
     pub alloc_dims: (u32, u32),
     /// Whether each slot has been used at least once (for first-use tracking).
     used: Vec<bool>,
+    /// Atomic counters tracking reuse, contention, and first-use events.
     pub metrics: RingMetrics,
 }
 
@@ -370,6 +394,7 @@ impl OutputRing {
         Ok(cloned)
     }
 
+    /// Return `true` if the current slot dimensions differ from `(in_w, in_h)`.
     pub fn needs_realloc(&self, in_w: u32, in_h: u32) -> bool {
         self.alloc_dims != (in_w, in_h)
     }
@@ -413,6 +438,7 @@ impl OutputRing {
         self.slots.len()
     }
 
+    /// Return `true` if the ring has no slots (should not happen in normal operation).
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
@@ -435,6 +461,11 @@ fn ort_element_type(format: PixelFormat) -> ort::tensor::TensorElementType {
 
 // ─── Backend ─────────────────────────────────────────────────────────────────
 
+/// TensorRT/CUDA ORT inference backend.
+///
+/// Implements [`UpscaleBackend`](rave_core::backend::UpscaleBackend) using
+/// ONNX Runtime with a TensorRT or CUDA execution provider.  Output buffers
+/// are managed via a fixed-size [`OutputRing`] to avoid per-frame allocation.
 pub struct TensorRtBackend {
     model_path: PathBuf,
     ctx: Arc<GpuContext>,
@@ -444,10 +475,11 @@ pub struct TensorRtBackend {
     meta: OnceLock<ModelMetadata>,
     selected_provider: OnceLock<String>,
     state: Mutex<Option<InferenceState>>,
+    /// Atomic inference latency and frame count metrics.
     pub inference_metrics: InferenceMetrics,
-    /// Phase 8: precision policy for TRT EP.
+    /// Precision policy used when building the TensorRT EP session.
     pub precision_policy: PrecisionPolicy,
-    /// Phase 8: batch configuration.
+    /// Batch configuration (must have `max_batch = 1` — batching not yet implemented).
     pub batch_config: BatchConfig,
 }
 
@@ -567,7 +599,7 @@ impl TensorRtBackend {
     }
 
     /// Access ring metrics (if initialized).
-    pub async fn ring_metrics(&self) -> Option<(u64, u64, u64)> {
+    pub async fn ring_metrics(&self) -> Option<RingMetricsSnapshot> {
         let guard = self.state.lock().await;
         guard
             .as_ref()
@@ -1648,8 +1680,13 @@ impl UpscaleBackend for TensorRtBackend {
 
             // Report ring metrics.
             if let Some(ring) = &state.ring {
-                let (reuse, contention, first) = ring.metrics.snapshot();
-                info!(reuse, contention, first, "Final ring metrics");
+                let snap = ring.metrics.snapshot();
+                info!(
+                    reuse = snap.reuse,
+                    contention = snap.contention,
+                    first_use = snap.first_use,
+                    "Final ring metrics"
+                );
             }
 
             // Report inference metrics.

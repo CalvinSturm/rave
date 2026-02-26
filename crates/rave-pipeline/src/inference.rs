@@ -39,8 +39,11 @@ pub struct InferencePipeline {
     /// NV12 output pitch (row stride for encoder).
     /// Set from the decode stage's pitch on first frame.
     nv12_output_pitch: Option<usize>,
+    /// Latency metrics for the NV12 → tensor preprocess stage.
     pub metrics_preprocess: StageMetrics,
+    /// Latency metrics for the TensorRT inference stage.
     pub metrics_inference: StageMetrics,
+    /// Latency metrics for the tensor → NV12 postprocess stage.
     pub metrics_postprocess: StageMetrics,
 }
 

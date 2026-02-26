@@ -30,7 +30,7 @@ use rave_core::host_copy_audit::{
 };
 use rave_core::types::{FrameEnvelope, GpuTexture, PixelFormat};
 use rave_pipeline::pipeline::{PipelineConfig, PipelineMetrics, UpscalePipeline};
-use rave_pipeline::runtime::{
+use rave_runtime_nvidia::{
     Decoder as PipelineDecoder, Encoder as PipelineEncoder, ResolvedInput, RuntimeRequest,
     RuntimeSetup, create_context_and_kernels as pipeline_create_context_and_kernels,
     create_decoder as pipeline_create_decoder,

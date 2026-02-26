@@ -1,3 +1,7 @@
+[![Crates.io](https://img.shields.io/crates/v/rave-pipeline.svg)](https://crates.io/crates/rave-pipeline)
+[![docs.rs](https://docs.rs/rave-pipeline/badge.svg)](https://docs.rs/rave-pipeline)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+
 # rave-pipeline
 
 Bounded async pipeline orchestration for RAVE.

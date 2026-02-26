@@ -182,7 +182,7 @@ Phase 1D — The Reactor Core
 * Bundle model and runtime dependencies
 * Optional Docker container for reproducibility
 * Optional automatic flag validation & help text
-  Outcome: users can run videoforge -i input.mp4 -o output.mp4 -m model.onnx out-of-the-box
+  Outcome: users can run rave upscale --input input.mp4 --output output.mp4 --model model.onnx out-of-the-box
 
 ---
 

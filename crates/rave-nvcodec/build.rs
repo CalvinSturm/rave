@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 //! Build script — locate CUDA toolkit, Video Codec SDK, and FFmpeg.
 //!
 //! Required environment variables:
@@ -71,9 +72,16 @@ fn resolve_nvcodec_dir(manifest_dir: &PathBuf) -> Option<PathBuf> {
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(rave_nvcodec_stub)");
+    println!("cargo:rustc-check-cfg=cfg(docsrs)");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     println!("cargo:rerun-if-changed=build.rs");
+
+    if env::var_os("DOCS_RS").is_some() {
+        println!("cargo:warning=DOCS_RS detected; building rave-nvcodec in stub mode");
+        println!("cargo:rustc-cfg=rave_nvcodec_stub");
+        return;
+    }
 
     // ── CUDA Toolkit ────────────────────────────────────────────────────────
 

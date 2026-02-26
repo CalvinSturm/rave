@@ -12,9 +12,9 @@ rave/
 │   ├── rave-tensorrt/
 │   ├── rave-nvcodec/
 │   ├── rave-ffmpeg/
-│   └── rave-pipeline/
+│   ├── rave-pipeline/
+│   └── rave-runtime-nvidia/
 ├── rave-cli/
-├── examples/
 └── Cargo.toml
 ```
 
@@ -25,6 +25,7 @@ rave/
 - `crates/rave-ffmpeg/README.md`
 - `crates/rave-nvcodec/README.md`
 - `crates/rave-pipeline/README.md`
+- `crates/rave-runtime-nvidia/README.md`
 - `crates/rave-tensorrt/README.md`
 - `rave-cli/README.md`
 
@@ -38,14 +39,16 @@ rave-cuda      -> rave-core
 rave-tensorrt  -> rave-core (optionally rave-cuda utilities)
 rave-nvcodec   -> rave-core (optionally rave-cuda utilities)
 rave-ffmpeg    -> rave-core
-rave-pipeline  -> rave-core, rave-cuda, rave-tensorrt, rave-nvcodec, rave-ffmpeg
-rave-cli       -> rave-core, rave-pipeline
+rave-pipeline       -> rave-core, rave-cuda, rave-tensorrt (+ optional graph runtime features)
+rave-runtime-nvidia -> rave-core, rave-cuda, rave-tensorrt, rave-nvcodec, rave-ffmpeg, rave-pipeline
+rave-cli            -> rave-core, rave-pipeline, rave-runtime-nvidia
 ```
 
 Why these boundaries exist:
 - Keep `rave-core` portable and free of engine wiring concerns.
 - Keep leaf crates focused on one domain (CUDA, TensorRT, codec, container I/O).
-- Keep cross-domain composition in one place: `rave-pipeline`.
+- Keep generic orchestration in `rave-pipeline`.
+- Keep concrete backend composition in `rave-runtime-nvidia`.
 
 Feature placement decision table:
 - Shared types/traits/errors: `rave-core`
@@ -53,7 +56,8 @@ Feature placement decision table:
 - Inference runtime behavior: `rave-tensorrt`
 - Decode/encode hardware behavior: `rave-nvcodec`
 - Container demux/mux/probe behavior: `rave-ffmpeg`
-- Multi-stage orchestration and strict runtime audits: `rave-pipeline`
+- Multi-stage orchestration and graph/runtime contracts: `rave-pipeline`
+- Concrete NVIDIA runtime composition (CUDA + TensorRT + FFmpeg + NVDEC/NVENC): `rave-runtime-nvidia`
 - CLI argument parsing/output formatting: `rave-cli`
 
 No-host-copies checklist:
@@ -69,6 +73,8 @@ Consumer integration contract:
 Stage graph integration API:
 - `rave-pipeline` exports `StageGraph`, `StageConfig`, `ProfilePreset`,
   `RunContract`, and `UpscalePipeline::run_graph(...)`.
+- `rave-runtime-nvidia` exports concrete runtime setup helpers (`prepare_runtime`,
+  `resolve_input`, `create_decoder`, `create_nvenc_encoder`).
 - `ProfilePreset::ProductionStrict` enables strict no-host-copies policy and
   deterministic contract checks (via optional checkpoint hooks).
 - Graph specs are schema-versioned and must include
@@ -226,20 +232,11 @@ Expected startup logs:
 cargo doc --workspace --no-deps
 ```
 
-## Examples
-
-```bash
-cargo run --example simple_upscale
-cargo run --example progress_callback
-cargo run --example custom_kernel
-cargo run --example batch_directory
-cargo run --example benchmark
-```
-
 ## Integration Entry Points
 
 Use the real entry points that exist today:
 
 - CLI workflows: `rave-cli` (`rave probe`, `rave devices`, `rave benchmark`, `rave upscale`, `rave validate`)
 - Library orchestration: `rave-pipeline` exports `UpscalePipeline`, `PipelineConfig`, `StageGraph`, `ProfilePreset`, `RunContract`
+- Concrete runtime composition: `rave-runtime-nvidia` exports runtime setup and codec/container wiring helpers
 - Shared contracts: `rave-core` exports `GpuTexture`, `FrameEnvelope`, `PixelFormat`, `EngineError`, `Result`

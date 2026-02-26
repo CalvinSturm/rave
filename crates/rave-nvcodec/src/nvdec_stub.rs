@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 //! CPU-only stub for builds without NVDEC/NVENC system dependencies.
 
 use std::sync::Arc;

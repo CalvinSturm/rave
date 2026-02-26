@@ -45,28 +45,7 @@ use rave_core::types::{FrameEnvelope, PixelFormat};
 
 // ─── NVENC configuration ─────────────────────────────────────────────────
 
-/// Encoder configuration parameters.
-#[derive(Clone, Debug)]
-pub struct NvEncConfig {
-    /// Target width.
-    pub width: u32,
-    /// Target height.
-    pub height: u32,
-    /// Framerate numerator.
-    pub fps_num: u32,
-    /// Framerate denominator.
-    pub fps_den: u32,
-    /// Average bitrate in bits/sec (0 = CQP mode).
-    pub bitrate: u32,
-    /// Max bitrate in bits/sec (VBR mode).
-    pub max_bitrate: u32,
-    /// GOP length (frames between IDR).
-    pub gop_length: u32,
-    /// B-frame interval (0 = no B-frames).
-    pub b_frames: u32,
-    /// NV12 row pitch (must match incoming frame pitch).
-    pub nv12_pitch: u32,
-}
+pub use crate::config::NvEncConfig;
 
 // ─── Registration cache ──────────────────────────────────────────────────
 
@@ -109,11 +88,11 @@ impl CudaContextGuard {
     fn make_current(target_ctx: CUcontext) -> Result<Self> {
         let mut prev_ctx: CUcontext = ptr::null_mut();
         unsafe {
-            check_cu(cuCtxGetCurrent(&mut prev_ctx), "cuCtxGetCurrent")?;
+            check_cu_encode(cuCtxGetCurrent(&mut prev_ctx), "cuCtxGetCurrent")?;
         }
         if prev_ctx != target_ctx {
             unsafe {
-                check_cu(cuCtxSetCurrent(target_ctx), "cuCtxSetCurrent")?;
+                check_cu_encode(cuCtxSetCurrent(target_ctx), "cuCtxSetCurrent")?;
             }
         }
         Ok(Self {
@@ -310,7 +289,7 @@ impl NvEncoder {
 
         let mut current_ctx: CUcontext = ptr::null_mut();
         unsafe {
-            check_cu(
+            check_cu_encode(
                 cuCtxGetCurrent(&mut current_ctx),
                 "cuCtxGetCurrent (before nvEncOpenEncodeSessionEx)",
             )?;
@@ -353,7 +332,13 @@ impl NvEncoder {
         let get_preset_fn = if fns.nvEncGetEncodePresetConfig.is_null() {
             None
         } else {
-            // SAFETY: Function pointer layout matches NVENC API declaration.
+            // SAFETY: `fns` was populated by `NvEncodeAPICreateInstance`, which
+            // guarantees that non-null entries in `NV_ENCODE_API_FUNCTION_LIST`
+            // point to functions with the declared signature.
+            // `nvEncGetEncodePresetConfig` is stored as `*const c_void` in the
+            // function table for binary-compatibility reasons; its true signature
+            // matches `GetPresetFn` exactly.  The null check above ensures this
+            // pointer is valid before the transmute.
             Some(unsafe {
                 mem::transmute::<*const c_void, GetPresetFn>(fns.nvEncGetEncodePresetConfig)
             })

@@ -1,3 +1,7 @@
+[![Crates.io](https://img.shields.io/crates/v/rave-cuda.svg)](https://crates.io/crates/rave-cuda)
+[![docs.rs](https://docs.rs/rave-cuda/badge.svg)](https://docs.rs/rave-cuda)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+
 # rave-cuda
 
 CUDA kernel layer for RAVE preprocessing and postprocessing.

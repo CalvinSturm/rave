@@ -1,3 +1,7 @@
+[![Crates.io](https://img.shields.io/crates/v/rave-tensorrt.svg)](https://crates.io/crates/rave-tensorrt)
+[![docs.rs](https://docs.rs/rave-tensorrt/badge.svg)](https://docs.rs/rave-tensorrt)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+
 # rave-tensorrt
 
 TensorRT-backed inference implementation for RAVE.

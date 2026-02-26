@@ -25,6 +25,9 @@ pub struct FileBitstreamSource {
 }
 
 impl FileBitstreamSource {
+    /// Open a raw Annex B bitstream file for reading.
+    ///
+    /// Returns an error if the file does not exist or cannot be read.
     pub fn new(path: PathBuf) -> Result<Self> {
         if !path.exists() {
             return Err(EngineError::Pipeline(format!(
