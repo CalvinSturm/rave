@@ -7,8 +7,6 @@ pub mod pipeline;
 #[cfg(not(feature = "cuda-pipeline"))]
 #[path = "pipeline_stub.rs"]
 pub mod pipeline;
-#[cfg(feature = "compat-runtime-nvidia")]
-pub mod runtime;
 pub mod stage_graph;
 
 pub use pipeline::{

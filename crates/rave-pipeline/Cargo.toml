@@ -21,7 +21,6 @@ audit-no-host-copies = ["rave-core/audit-no-host-copies", "dep:rave-tensorrt", "
 debug-host-copies = []
 nvidia-inference = ["cuda-pipeline", "dep:rave-tensorrt"]
 nvidia-run-graph = ["nvidia-inference", "dep:rave-ffmpeg", "dep:rave-nvcodec"]
-compat-runtime-nvidia = ["dep:rave-runtime-nvidia"]
 
 [lints]
 workspace = true
@@ -44,4 +43,3 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-rave-runtime-nvidia = { workspace = true, optional = true }
