@@ -6,6 +6,10 @@ on:
     tags: ["v*"]
   pull_request:
 
+env:
+  PKG_CONFIG: pkg-config
+  HOST_PKG_CONFIG: pkg-config
+
 jobs:
   publishability:
     runs-on: ubuntu-latest
